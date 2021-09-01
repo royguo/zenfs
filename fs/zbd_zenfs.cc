@@ -651,9 +651,6 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   LatencyHistGuard guard_wal_actual;
   LatencyHistGuard guard_non_wal_actual;
 
-  guard_non_wal.count_now(&io_alloc_non_wal_latency_reporter_);
-  guard_wal.count_now(&io_alloc_wal_latency_reporter_);
-
   io_alloc_qps_reporter_.AddCount(1);
 
   auto t0 = std::chrono::system_clock::now();
