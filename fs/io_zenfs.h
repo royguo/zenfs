@@ -48,14 +48,15 @@ class ZoneFile {
 
   Env::WriteLifeTimeHint lifetime_;
   uint64_t fileSize;
-  std::string filename_;
   uint64_t file_id_;
 
   uint32_t nr_synced_extents_;
   bool open_for_wr_ = false;
   time_t m_time_;
-  
   std::shared_ptr<Logger> logger_;
+  
+ public:
+  std::string filename_;
   bool is_wal_;
 
  public:

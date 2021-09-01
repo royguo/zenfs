@@ -6,6 +6,8 @@
 #pragma once
 #include <chrono>
 #include <cstdio>
+#include <set>
+#include <map>
 #include <ctime>
 #include <iostream>
 #include <sstream>
@@ -13,10 +15,10 @@
 #ifdef ZENFS_DEBUG
 
 // zone_id: filename, create_time
-static std::map<uint64_t, std::vector<std::pair<std::string, std::string>>>
+extern std::map<uint64_t, std::vector<std::pair<std::string, std::string>>>
     opened_files;
 // filenames
-static std::set<std::string> opening_files;
+extern std::set<std::string> opening_files;
 
 // Avoid std::cerr print interleave cross multiple concurrent threads.
 class LineWriter {
@@ -92,7 +94,7 @@ inline std::string GetDateString() {
 }
 
 // For quick time trace debugging
-thread_local std::map<std::string, uint64_t> TimeTrace;
+extern thread_local std::map<std::string, uint64_t> TimeTrace;
 
 #define TIME_TRACE_START(tag) TimeTrace[tag] = GetCurrentTimeNanos();
 

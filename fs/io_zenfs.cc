@@ -6,7 +6,6 @@
 
 #if !defined(ROCKSDB_LITE) && !defined(OS_WIN)
 
-#include "io_zenfs.h"
 
 #include <assert.h>
 #include <errno.h>
@@ -29,6 +28,11 @@
 #include "rocksdb/metrics_reporter.h"
 #include "util/coding.h"
 #include "zbd_zenfs.h"
+#include "io_zenfs.h"
+
+#define ZENFS_DEBUG
+#include "utils.h"
+thread_local std::map<std::string, uint64_t> TimeTrace;
 
 namespace ROCKSDB_NAMESPACE {
 
@@ -205,11 +209,11 @@ ZoneFile::ZoneFile(ZonedBlockDevice* zbd, std::string filename,
       extent_filepos_(0),
       lifetime_(Env::WLTH_NOT_SET),
       fileSize(0),
-      filename_(filename),
       file_id_(file_id),
       nr_synced_extents_(0),
       m_time_(0),
       logger_(logger),
+      filename_(filename),
       is_wal_(false) {
   // Generally, we should let our user to decide whether a file is WAL
   // or not. However, current TerarkDB environment doesn't provide such
@@ -486,17 +490,38 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
   LatencyHistGuard guard(&zoneFile_->GetZbd()->sync_latency_reporter_);
   zoneFile_->GetZbd()->sync_qps_reporter_.AddCount(1);
 
+	auto t0 = std::chrono::system_clock::now();
+
+	TIME_TRACE_START("1.buffer_mtx")
   buffer_mtx_.lock();
+	TIME_TRACE_END("1.buffer_mtx")
+	TIME_TRACE_START("2.flush buffer")
   s = FlushBuffer();
+	TIME_TRACE_END("2.flush buffer")
   if (s.ok()) {
+		TIME_TRACE_START("3.Sync()")
     s = zoneFile_->Sync();
+		TIME_TRACE_END("3.Sync()")
   }
   buffer_mtx_.unlock();
   
   if (!s.ok()) return s;
   
+	TIME_TRACE_START("4.push extent()")
   zoneFile_->PushExtent();
-  return metadata_writer_->Persist(zoneFile_);
+	TIME_TRACE_END("4.push extent()")
+	TIME_TRACE_START("5.persist meta")
+  s = metadata_writer_->Persist(zoneFile_);
+	TIME_TRACE_END("5.persist meta")
+	auto t1 = std::chrono::system_clock::now();
+
+	auto dur = std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count();
+	if(dur >= 10000) {
+		std::cerr << "filename : " << zoneFile_->filename_ << std::endl;
+		PRINT_TIME_TRACE();
+	}
+
+	return s;
 }
 
 IOStatus ZonedWritableFile::Sync(const IOOptions& options,
@@ -537,12 +562,16 @@ IOStatus ZonedWritableFile::FlushBuffer() {
   if (pad_sz) memset((char*)buffer + buffer_pos, 0x0, pad_sz);
 
   wr_sz = buffer_pos + pad_sz;
+	TIME_TRACE_START("2.1.\tzone file append, async")
   s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos, true);
+	TIME_TRACE_END("2.1.\tzone file append, async")
   if (!s.ok()) {
     return s;
   }
 
+	TIME_TRACE_START("2.2.\tzone file sync")
   s = zoneFile_->Sync();
+	TIME_TRACE_END("2.2.\tzone file sync")
   if (!s.ok())
     return s;
 

@@ -202,7 +202,9 @@ IOStatus Zone::Sync() {
   if (wr_ctx.inflight == 0)
     return IOStatus::OK();
 
-  ret = io_getevents(wr_ctx.io_ctx, 1, 1, events, &timeout);
+	TIME_TRACE_START("2.2.1. \t\tio_getevents");
+  ret = io_getevents(wr_ctx.io_ctx, 0, 1, events, &timeout);
+	TIME_TRACE_END("2.2.1. \t\tio_getevents");
   if (ret != 1) {
     fprintf(stderr, "Failed to complete io - timeout ret: %d\n", ret);
     return IOStatus::IOError("Failed to complete io - timeout?");
