@@ -496,7 +496,9 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
   buffer_mtx_.lock();
 	TIME_TRACE_END("1.buffer_mtx")
 	TIME_TRACE_START("2.flush buffer")
+	uint64_t wp1 = wp;
   s = FlushBuffer();
+	uint64_t wp2 = wp;
 	TIME_TRACE_END("2.flush buffer")
   if (s.ok()) {
 		TIME_TRACE_START("3.Sync()")
@@ -517,6 +519,7 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
 
 	auto dur = std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count();
 	if(dur >= 10000 && zoneFile_->is_wal_) {
+		std::cerr << "fsync flush size: " << (wp2 - wp1) << " bytes" << std::endl;
 		PRINT_TIME_TRACE();
 	}
 
