@@ -24,6 +24,9 @@
 #include "util/crc32c.h"
 #include "utilities/trace/bytedance_metrics_reporter.h"
 
+#define ZENFS_DEBUG
+#include "utils.h"
+
 #define DEFAULT_ZENV_LOG_PATH "/tmp/"
 
 namespace ROCKSDB_NAMESPACE {
@@ -296,6 +299,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   zbd_->roll_qps_reporter_.AddCount(1);
 
   new_meta_zone = zbd_->AllocateMetaZone();
+
   if (!new_meta_zone) {
     assert(false);  // TMP
     Error(logger_, "Out of metadata zones, we should go to read only now.");
@@ -324,13 +328,20 @@ IOStatus ZenFS::RollMetaZoneLocked() {
     return IOStatus::IOError("Failed writing a new superblock");
   }
 
+
+        TIME_TRACE_START("5.1.1.1 \t\t\tWriteSnapshotLocked");
   s = WriteSnapshotLocked(meta_log_.get());
+        TIME_TRACE_END("5.1.1.1 \t\t\tWriteSnapshotLocked");
 
   /* We've rolled successfully, we can reset the old zone now */
+
+        TIME_TRACE_START("5.1.1.2 \t\t\told_meta_zone->Reset()");
   if (s.ok()) old_meta_zone->Reset();
+        TIME_TRACE_END("5.1.1.2 \t\t\told_meta_zone->Reset()");
 
   auto new_meta_zone_size =
       meta_log_->GetZone()->wp_ - meta_log_->GetZone()->start_;
+
   Info(logger_, "Size of new meta zone %ld\n", new_meta_zone_size);
 
   zbd_->roll_throughput_reporter_.AddCount(new_meta_zone_size);
@@ -367,7 +378,11 @@ IOStatus ZenFS::PersistRecord(std::string record) {
   s = meta_log_->AddRecord(record);
   if (s == IOStatus::NoSpace()) {
     Info(logger_, "Current meta zone full, rolling to next meta zone");
+
+    TIME_TRACE_START("5.1.1. \t\tRollMetaZoneLocked");
     s = RollMetaZoneLocked();
+    TIME_TRACE_END("5.1.1. \t\tRollMetaZoneLocked");
+
     /* After a successfull roll, a complete snapshot has been persisted
      * - no need to write the record update */
   }
@@ -389,7 +404,11 @@ IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
   zoneFile->EncodeUpdateTo(&fileRecord);
   PutLengthPrefixedSlice(&output, Slice(fileRecord));
 
+
+        TIME_TRACE_START("5.1.\tpersist record")
   s = PersistRecord(output);
+        TIME_TRACE_END("5.1.\tpersist record")
+
   if (s.ok()) zoneFile->MetadataSynced();
 
   files_mtx_.unlock();

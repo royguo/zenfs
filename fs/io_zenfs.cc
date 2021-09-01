@@ -520,6 +520,7 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
 	auto dur = std::chrono::duration_cast<std::chrono::microseconds>(t1-t0).count();
 	if(dur >= 10000 && zoneFile_->is_wal_) {
 		std::cerr << "fsync flush size: " << (wp2 - wp1) << " bytes" << std::endl;
+        std::cerr << "filename: " << zoneFile_->filename_;
 		PRINT_TIME_TRACE();
 	}
 
