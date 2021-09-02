@@ -112,7 +112,9 @@ IOStatus Zone::Reset() {
 
   assert(!IsUsed());
 
+    TIME_TRACE_START("5.1.1.2.1 \t\t\t\tzbd_reset_zones");
   ret = zbd_reset_zones(zbd_->GetWriteFD(), start_, zone_sz);
+    TIME_TRACE_END("5.1.1.2.1 \t\t\t\tzbd_reset_zones");
   if (ret) return IOStatus::IOError("Zone reset failed\n");
 
   ret = zbd_report_zones(zbd_->GetReadFD(), start_, zone_sz, ZBD_RO_ALL, &z, &report);
@@ -126,7 +128,6 @@ IOStatus Zone::Reset() {
 
   wp_ = start_;
   lifetime_ = Env::WLTH_NOT_SET;
-
   return IOStatus::OK();
 }
 
