@@ -44,7 +44,7 @@
  * to roll the metadata log safely. One extra
  * is allocated to cover for one zone going offline.
  */
-#define ZENFS_META_ZONES (3)
+#define ZENFS_META_ZONES (4)
 
 /* Minimum of number of zones that makes sense */
 #define ZENFS_MIN_ZONES (32)
@@ -621,6 +621,31 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
   return nullptr;
 }
 
+Zone *ZonedBlockDevice::AllocateMetaZoneLocked(std::mutex& metadata_reset_mtx) {
+  Zone* allocated_zone = nullptr;
+  while (true) {
+    {
+      std::unique_lock<std::mutex> lk(metadata_reset_mtx);
+      allocated_zone = AllocateMetaZone();
+    }
+
+    if (allocated_zone) {
+      break;
+    }
+
+    {
+      std::this_thread::yield();
+      std::unique_lock<std::mutex> lk(metadata_reset_mtx);
+      allocated_zone = AllocateMetaZone();
+    }
+
+    if (allocated_zone) {
+        break;
+    }
+  }
+  return allocated_zone;
+}
+
 void ZonedBlockDevice::ResetUnusedIOZones() {
   const std::lock_guard<std::mutex> lock(zone_resources_mtx_);
   /* Reset any unused zones */
@@ -642,14 +667,13 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
 
+  LatencyHistGuard guard_total;
+  LatencyHistGuard guard_actual;
+
   auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
 
   guard_total.count_now(reporter_total);
-  LatencyHistGuard guard_wal;
-  LatencyHistGuard guard_non_wal;
-  LatencyHistGuard guard_wal_actual;
-  LatencyHistGuard guard_non_wal_actual;
 
   io_alloc_qps_reporter_.AddCount(1);
 
