@@ -51,6 +51,8 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+std::map<uint64_t, std::string> zone_using_files;
+
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
       start_(zbd_zone_start(z)),
@@ -82,11 +84,12 @@ uint64_t Zone::GetZoneNr() { return start_ / zbd_->GetZoneSize(); }
 void Zone::CloseWR() {
   assert(open_for_write_);
   Sync();
-  open_for_write_ = false;
 
   std::lock_guard<std::mutex> lock(zbd_->zone_resources_mtx_);
   if (Close().ok()) {
     assert(!open_for_write_);
+		std::cerr << "close wr: " << CurrentTime() << zone_using_files[start_] << std::endl;
+		zone_using_files.erase(start_);
     zbd_->NotifyIOZoneClosed();
   }
 
@@ -207,7 +210,8 @@ IOStatus Zone::Sync() {
   ret = io_getevents(wr_ctx.io_ctx, 1, 1, events, &timeout);
 	TIME_TRACE_END("2.2.1. \t\tio_getevents");
   if (ret != 1) {
-    fprintf(stderr, "Failed to complete io - timeout ret: %d\n", ret);
+    fprintf(stderr, "Failed to complete io - timeout ret: %d, zone.start = %lu\n", ret, start_);
+		PRINT_TIME_TRACE();
     return IOStatus::IOError("Failed to complete io - timeout?");
   }
 
@@ -636,7 +640,7 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
   }
 }
 
-Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
+Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal, std::string fname) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
@@ -813,12 +817,25 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   open_zones_reporter_.AddRecord(open_io_zones_);
   active_zones_reporter_.AddRecord(active_io_zones_);
+	uint64_t zid = allocated_zone->start_;
+
+	Info(logger_, "allocate zone %lu, for file: %s, count(zid) = %lu\n", zid, fname.data(),zone_using_files.count(zid));
+
+	if(zone_using_files.count(zid) > 0) {
+		Info(logger_, "zone already opened for file %s, newopen file: %s", zone_using_files[zid].data(), fname.data());
+	} else {
+	  zone_using_files[zid] = fname;
+	}
 
   std::stringstream ss;
   ss << " is_wal = " << is_wal << " a/o zones " << active_io_zones_.load() << "," << open_io_zones_.load()
      << " lock wait: " << TimeDiff(t0, t1) << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t5)
-     << ", wal_alloc: " << wal_zone_allocating_.load() << "\n";
+		 << ", open_zone_cnt: "<< zone_using_files.size() << "\n";
+	for(const auto& p: zone_using_files) {
+		ss << "\t" << p.first << ":" << p.second << "\n";
+	}
   Info(logger_, "%s", ss.str().c_str());
+
 
   return allocated_zone;
 }

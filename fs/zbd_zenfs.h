@@ -124,7 +124,7 @@ class ZonedBlockDevice {
 
   Zone *GetIOZone(uint64_t offset);
 
-  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal);
+  Zone *AllocateZone(Env::WriteLifeTimeHint lifetime, bool is_wal, std::string filename);
   Zone *AllocateMetaZone();
 
   uint64_t GetFreeSpace();
