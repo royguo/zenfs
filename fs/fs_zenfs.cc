@@ -295,7 +295,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
   zbd_->roll_qps_reporter_.AddCount(1);
 
-  new_meta_zone = zbd_->AllocateMetaZoneLocked(metadata_reset_mtx_);
+  new_meta_zone = zbd_->AllocateMetaZone(metadata_reset_mtx_, metadata_reset_cv_);
 
   if (!new_meta_zone) {
     assert(false);  // TMP

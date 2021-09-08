@@ -602,47 +602,34 @@ unsigned int GetLifeTimeDiff(Env::WriteLifeTimeHint zone_lifetime, Env::WriteLif
   return LIFETIME_DIFF_NOT_GOOD;
 }
 
-Zone *ZonedBlockDevice::AllocateMetaZone() {
-  LatencyHistGuard guard(&meta_alloc_latency_reporter_);
-  meta_alloc_qps_reporter_.AddCount(1);
+Zone *ZonedBlockDevice::AllocateMetaZone(std::mutex& metadata_reset_mtx, std::condition_variable& cv) {
 
-  for (const auto z : meta_zones) {
-    /* If the zone is not used, reset and use it */
-    if (!z->IsUsed()) {
-      if (!z->IsEmpty()) {
-        if (!z->Reset().ok()) {
-          Warn(logger_, "Failed resetting zone!");
-          continue;
+  auto ProcessingAllocateMetaZone = [this] () -> Zone* {
+    LatencyHistGuard guard(&meta_alloc_latency_reporter_);
+    meta_alloc_qps_reporter_.AddCount(1);
+
+    for (const auto z : meta_zones) {
+      /* If the zone is not used, reset and use it */
+      if (!z->IsUsed()) {
+        if (!z->IsEmpty()) {
+          if (!z->Reset().ok()) {
+            Warn(logger_, "Failed resetting zone!");
+            continue;
+          }
         }
+        return z;
       }
-      return z;
     }
-  }
-  return nullptr;
-}
+    return nullptr;
+  };
 
-Zone *ZonedBlockDevice::AllocateMetaZoneLocked(std::mutex& metadata_reset_mtx) {
   Zone* allocated_zone = nullptr;
-  while (true) {
-    {
-      std::unique_lock<std::mutex> lk(metadata_reset_mtx);
-      allocated_zone = AllocateMetaZone();
-    }
+  std::unique_lock<std::mutex> lk(metadata_reset_mtx);
+  cv.wait(lk, [&]{
+    allocated_zone = ProcessingAllocateMetaZone();
+    return allocated_zone;
+  });
 
-    if (allocated_zone) {
-      break;
-    }
-
-    {
-      std::this_thread::yield();
-      std::unique_lock<std::mutex> lk(metadata_reset_mtx);
-      allocated_zone = AllocateMetaZone();
-    }
-
-    if (allocated_zone) {
-        break;
-    }
-  }
   return allocated_zone;
 }
 
