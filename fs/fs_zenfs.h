@@ -127,9 +127,6 @@ class ZenFS : public FileSystemWrapper {
   std::unique_ptr<ZenMetaLog> meta_log_;
   std::mutex metadata_sync_mtx_;
   std::unique_ptr<Superblock> superblock_;
-  std::mutex metadata_reset_mtx_;
-  std::condition_variable metadata_reset_cv_;
-  std::condition_variable metadata_cv_;
 
   std::shared_ptr<Logger> GetLogger() { return logger_; }
 

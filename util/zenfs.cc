@@ -59,6 +59,8 @@ Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly) {
     *zenFS = nullptr;
   }
 
+  // Wait till all reset tasks finished
+  std::unique_ptr<std::mutex> lk(zbd->metazone_reset_mtx);
   return s;
 }
 
