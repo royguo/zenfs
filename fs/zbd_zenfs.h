@@ -10,12 +10,12 @@
 
 #include <errno.h>
 #include <libaio.h>
+#include <libaio.h>
 #include <libzbd/zbd.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
 #include <unistd.h>
-#include <libaio.h>
 
 #include <atomic>
 #include <condition_variable>
@@ -109,6 +109,9 @@ class ZonedBlockDevice {
  public:
   std::mutex zone_resources_mtx_; /* Protects active/open io zones */
 
+  std::mutex metazone_reset_mtx_;
+  std::condition_variable metazone_reset_cv_;
+
  public:
   explicit ZonedBlockDevice(std::string bdevname,
                             std::shared_ptr<Logger> logger);
@@ -161,7 +164,7 @@ class ZonedBlockDevice {
       return false;
     }
   }
-  
+
   bool SetMaxOpenZones(uint32_t max_open) {
     if (max_open == 0) /* No limit */
       return true;

@@ -606,6 +606,17 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
   LatencyHistGuard guard(&meta_alloc_latency_reporter_);
   meta_alloc_qps_reporter_.AddCount(1);
 
+  // Wait till there is an empty metazone
+  std::unique_lock<std::mutex> lk(metazone_reset_mtx_);
+  metazone_reset_cv_.wait(lk, [&] {
+    for (const auto z : meta_zones) {
+      if (!z->IsUsed() && z->IsEmpty()) {
+        return true;
+      }
+    }
+  });
+
+  // TODO(guokuankuan) we don't have to do the resetting here anymore
   for (const auto z : meta_zones) {
     /* If the zone is not used, reset and use it */
     if (!z->IsUsed()) {

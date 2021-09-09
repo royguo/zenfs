@@ -327,7 +327,14 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   s = WriteSnapshotLocked(meta_log_.get());
 
   /* We've rolled successfully, we can reset the old zone now */
-  if (s.ok()) old_meta_zone->Reset();
+  if (s.ok()) {
+    auto t = std::thread([&, old_meta_zone]() {
+      std::unique_lock<std::mutex> lk(zbd_->metazone_reset_mtx_);
+      old_meta_zone->Reset();
+      zbd_->metazone_reset_cv_.notify_all();
+    });
+    t.detach();
+  }
 
   auto new_meta_zone_size =
       meta_log_->GetZone()->wp_ - meta_log_->GetZone()->start_;
@@ -1050,8 +1057,8 @@ Status ZenFS::MkFS(std::string aux_fs_path, uint32_t finish_threshold,
 
   log.reset(new ZenMetaLog(zbd_, meta_zone));
 
-  Superblock* super = new Superblock(zbd_, aux_fs_path,
-                          finish_threshold, max_open_limit, max_active_limit);
+  Superblock* super = new Superblock(zbd_, aux_fs_path, finish_threshold,
+                                     max_open_limit, max_active_limit);
   std::string super_string;
   super->EncodeTo(&super_string);
 
@@ -1146,7 +1153,7 @@ Status NewZenFS(
   }
   ZonedBlockDevice* zbd = new ZonedBlockDevice(
       bdevname, logger, bytedance_tags_, metrics_reporter_factory_);
-	IOStatus zbd_status = zbd->Open();
+  IOStatus zbd_status = zbd->Open();
   if (!zbd_status.ok()) {
     Error(logger, "Failed to open zoned block device: %s",
           zbd_status.ToString().c_str());
