@@ -14,8 +14,9 @@
 #include <sstream>
 
 #include <rocksdb/file_system.h>
-#include <rocksdb/plugin/zenfs/fs/fs_zenfs.h>
 #include <gflags/gflags.h>
+
+#include "fs/fs_zenfs.h"
 
 using GFLAGS_NAMESPACE::ParseCommandLineFlags;
 using GFLAGS_NAMESPACE::RegisterFlagValidator;
