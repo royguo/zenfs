@@ -295,7 +295,7 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   LatencyHistGuard guard(&zbd_->roll_latency_reporter_);
   zbd_->roll_qps_reporter_.AddCount(1);
 
-  new_meta_zone = zbd_->AllocateMetaZone(metadata_reset_mtx_, metadata_reset_cv_);
+  new_meta_zone = zbd_->AllocateMetaZone();
 
   if (!new_meta_zone) {
     assert(false);  // TMP
@@ -305,7 +305,6 @@ IOStatus ZenFS::RollMetaZoneLocked() {
 
   Info(logger_, "Rolling to metazone %d\n", (int)new_meta_zone->GetZoneNr());
   new_meta_log = new ZenMetaLog(zbd_, new_meta_zone);
-
   old_meta_zone = meta_log_->GetZone();
   old_meta_zone->open_for_write_ = false;
 
@@ -313,7 +312,6 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   if (old_meta_zone->GetCapacityLeft()) WriteEndRecord(meta_log_.get());
   if (old_meta_zone->GetCapacityLeft()) old_meta_zone->Finish();
 
-  auto old_meta_log = std::move(meta_log_);
   meta_log_.reset(new_meta_log);
 
   std::string super_string;

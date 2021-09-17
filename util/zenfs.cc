@@ -15,6 +15,7 @@
 
 #include <rocksdb/file_system.h>
 #include <gflags/gflags.h>
+#include <util/testutil.h>
 
 #include "fs/fs_zenfs.h"
 
@@ -36,7 +37,8 @@ DEFINE_int32(max_open_zones, 0, "Max active zone limit");
 namespace ROCKSDB_NAMESPACE {
 
 ZonedBlockDevice *zbd_open(bool readonly) {
-  ZonedBlockDevice *zbd = new ZonedBlockDevice(FLAGS_zbd, nullptr);
+  auto logger = std::make_shared<test::NullLogger>();
+  ZonedBlockDevice *zbd = new ZonedBlockDevice(FLAGS_zbd, logger);
   IOStatus open_status = zbd->Open(readonly);
 
   if (!open_status.ok()) {
@@ -51,8 +53,8 @@ ZonedBlockDevice *zbd_open(bool readonly) {
 
 Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly) {
   Status s;
-
-  *zenFS = new ZenFS(zbd, FileSystem::Default(), nullptr);
+  auto logger = std::make_shared<test::NullLogger>();
+  *zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
   s = (*zenFS)->Mount(readonly);
   if (!s.ok()) {
     delete *zenFS;
@@ -60,7 +62,7 @@ Status zenfs_mount(ZonedBlockDevice *zbd, ZenFS **zenFS, bool readonly) {
   }
 
   // Wait till all reset tasks finished
-  std::unique_ptr<std::mutex> lk(zbd->metazone_reset_mtx);
+  std::unique_lock<std::mutex> lk(zbd->metazone_reset_mtx_);
   return s;
 }
 
@@ -95,7 +97,9 @@ int zenfs_tool_mkfs() {
   if (zenFS != nullptr) delete zenFS;
 
   zbd = zbd_open(false);
-  zenFS = new ZenFS(zbd, FileSystem::Default(), nullptr);
+
+  auto logger = std::make_shared<test::NullLogger>();
+  zenFS = new ZenFS(zbd, FileSystem::Default(), logger);
 
   if (FLAGS_aux_path.back() != '/') FLAGS_aux_path.append("/");
 

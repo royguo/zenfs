@@ -676,20 +676,12 @@ Zone *ZonedBlockDevice::AllocateMetaZone() {
           Warn(logger_, "Failed resetting zone!");
           continue;
         }
-        return z;
       }
+      return z;
     }
-    return nullptr;
-  };
+  }
 
-  Zone* allocated_zone = nullptr;
-  std::unique_lock<std::mutex> lk(metadata_reset_mtx);
-  metadata_cv.wait(lk, [&allocated_zone, getResettedMetaZone]{
-    allocated_zone = getResettedMetaZone();
-    return allocated_zone != nullptr;
-  });
-
-  return allocated_zone;
+  return nullptr;
 }
 
 void ZonedBlockDevice::ResetUnusedIOZones() {
