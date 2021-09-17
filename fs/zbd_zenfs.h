@@ -31,7 +31,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/io_status.h"
 #include "rocksdb/metrics_reporter.h"
-#include "rocksdb/plugin/zenfs/fs/zbd_stat.h"
+#include "zbd_stat.h"
 
 namespace ROCKSDB_NAMESPACE {
 
