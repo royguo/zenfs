@@ -2,8 +2,8 @@
 #include <fcntl.h>
 #include <gflags/gflags.h>
 #include <rocksdb/file_system.h>
-#include <rocksdb/plugin/zenfs/fs/fs_zenfs.h>
-#include <rocksdb/plugin/zenfs/fs/zbd_zenfs.h>
+#include <fs/fs_zenfs.h>
+#include <fs/zbd_zenfs.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 
