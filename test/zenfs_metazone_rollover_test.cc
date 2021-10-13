@@ -15,7 +15,8 @@ int test_metadata_rollover() {
 
   ZonedBlockDevice *zbd = zbd_open(false, logger);
   if (zbd == nullptr) {
-    fprintf(stderr, "Failed to open file\n");;
+    fprintf(stderr, "Failed to open file\n");
+    ;
     return 1;
   }
 
@@ -23,11 +24,13 @@ int test_metadata_rollover() {
   s = zenfs_mount(zbd, &zenFS, false, logger);
   if (!s.ok()) {
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-    assert(find_sub_string(s.ToString().c_str(), "Calling experimental function "
-                                                 "ZenFS::RollMetaZoneAsync()"));
+    assert(find_sub_string(s.ToString().c_str(),
+                           "Calling experimental function "
+                           "ZenFS::RollMetaZoneAsync()"));
     return 0;
 #endif
-    fprintf(stderr, "Failed to mount filesystem, error: %s\n", s.ToString().c_str());
+    fprintf(stderr, "Failed to mount filesystem, error: %s\n",
+            s.ToString().c_str());
     return 1;
   }
 
@@ -36,32 +39,33 @@ int test_metadata_rollover() {
 
 int test_mkfs() {
   Status s;
-  DIR* aux_dir;
+  DIR *aux_dir;
   std::shared_ptr<Logger> logger;
 
   if (FLAGS_aux_path.empty()) {
-      fprintf(stderr, "You need to specify --aux_path\n");
-      return 1;
+    fprintf(stderr, "You need to specify --aux_path\n");
+    return 1;
   }
 
   aux_dir = opendir(FLAGS_aux_path.c_str());
   if (ENOENT != errno) {
-      fprintf(stderr, "Error: aux path exists\n");
-      closedir(aux_dir);
-      return 1;
+    fprintf(stderr, "Error: aux path exists\n");
+    closedir(aux_dir);
+    return 1;
   }
 
   s = Env::Default()->NewLogger(GetLogFilename(FLAGS_zbd), &logger);
   if (!s.ok()) {
-      fprintf(stderr, "ZenFS: Could not create logger");
+    fprintf(stderr, "ZenFS: Could not create logger");
   } else {
-      logger->SetInfoLogLevel(DEBUG_LEVEL);
+    logger->SetInfoLogLevel(DEBUG_LEVEL);
   }
 
   ZonedBlockDevice *zbd = zbd_open(false, logger);
   if (zbd == nullptr) {
-      fprintf(stderr, "Failed to open file\n");;
-      return 1;
+    fprintf(stderr, "Failed to open file\n");
+    ;
+    return 1;
   }
 
   /* verify if snapshot zones being allocated properly */
@@ -79,8 +83,8 @@ int test_mkfs() {
     FLAGS_aux_path.append("/");
   }
 
-  s = zenFS->MkFS(FLAGS_aux_path, FLAGS_finish_threshold,
-                  FLAGS_max_open_zones, FLAGS_max_active_zones);
+  s = zenFS->MkFS(FLAGS_aux_path, FLAGS_finish_threshold, FLAGS_max_open_zones,
+                  FLAGS_max_active_zones);
   if (!s.ok()) {
     fprintf(stderr, "Failed to create file system, error: %s\n",
             s.ToString().c_str());
