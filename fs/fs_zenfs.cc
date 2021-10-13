@@ -1022,11 +1022,30 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 #define ZENV_URI_PATTERN "zenfs://"
 
 /* find all valid superblocks for snapshot or op log zones */
-Status ZenFS::FindAllValidSuperblocks(std::vector<Zone*> const & zones,
+Status ZenFS::FindAllValidSuperblocks(ZenFSZoneTag zone_tag,
     std::vector<std::unique_ptr<Superblock>>& valid_superblocks,
     std::vector<std::unique_ptr<ZenMetaLog>>& valid_logs,
     std::vector<Zone*>& valid_zones,
     std::vector<std::pair<uint32_t, uint32_t>>& seq_map) {
+
+ std::vector<Zone*> zones;
+
+ switch (zone_tag) {
+   case kSnapshotZone:
+     {
+       zones = zbd_->GetSnapshotZones();
+       break;
+     }
+   case kOpLogZone:
+     {
+       zones = zbd_->GetOpZones();
+       break;
+     }
+   default:
+     Warn(logger_, "Unexpected ZenFS zone tag: %u", zone_tag);
+     return Status::Corruption("ZenFS", "Unexpected zone tag");
+ }
+
   Status s;
 
   /* We need a minimum of two non-offline zones */
@@ -1082,13 +1101,12 @@ Status ZenFS::Mount(bool readonly) {
   Status s;
 
 #ifdef WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
-  std::vector<Zone*> snapshot_zones = zbd_->GetSnapshotZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks_snapshot;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_snapshot;
   std::vector<Zone*> valid_zones_snapshot;
   std::vector<std::pair<uint32_t, uint32_t>> seq_map_snapshot;
 
-  s = FindAllValidSuperblocks(snapshot_zones, valid_superblocks_snapshot,
+  s = FindAllValidSuperblocks(kSnapshotZone, valid_superblocks_snapshot,
       valid_logs_snapshot, valid_zones_snapshot, seq_map_snapshot);
   if (!s.ok()) {
     Error(logger_, "Did not find valid superblock in Snapshot zones. Error: %s",
@@ -1150,13 +1168,12 @@ Status ZenFS::Mount(bool readonly) {
 
 #endif // WITH_ZENFS_ASYNC_METAZONE_ROLLOVER
 
-  std::vector<Zone*> op_zones = zbd_->GetOpZones();
   std::vector<std::unique_ptr<Superblock>> valid_superblocks_op;
   std::vector<std::unique_ptr<ZenMetaLog>> valid_logs_op;
   std::vector<Zone*> valid_zones_op_log;
   std::vector<std::pair<uint32_t, uint32_t>> seq_map_op;
 
-  s = FindAllValidSuperblocks(op_zones, valid_superblocks_op,
+  s = FindAllValidSuperblocks(kOpLogZone, valid_superblocks_op,
       valid_logs_op, valid_zones_op_log, seq_map_op);
   if (!s.ok()) {
     Error(logger_, "Did not find valid superblock in Op Log zones. Error: %s",
