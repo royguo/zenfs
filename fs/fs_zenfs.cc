@@ -770,7 +770,7 @@ Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
   return Status::OK();
 }
 
-Status ZenFS::DecodeSnapshotFrom(Slice* input) {
+Status ZenFS::DecodeSnapshotFrom(Slice* input, bool cache_files) {
   Slice slice;
 
   assert(files_.size() == 0);
@@ -780,26 +780,11 @@ Status ZenFS::DecodeSnapshotFrom(Slice* input) {
     Status s = zoneFile->DecodeFrom(&slice);
     if (!s.ok()) return s;
 
-    files_.insert(std::make_pair(zoneFile->GetFilename(), zoneFile));
-    if (zoneFile->GetID() >= next_file_id_)
-      next_file_id_ = zoneFile->GetID() + 1;
-  }
-
-  return Status::OK();
-}
-
-/* This function only read through slices in a snapshot record and
- * DO NOT add valid slices to files_ to avoid duplicating files
- * appeared in different snapshots*/
-Status ZenFS::DecodeSnapshotFromAndNoCacheFiles(Slice* input) {
-  Slice slice;
-
-  assert(files_.size() == 0);
-
-  while (GetLengthPrefixedSlice(input, &slice)) {
-    ZoneFile* zoneFile = new ZoneFile(zbd_, "not_set", 0, logger_);
-    Status s = zoneFile->DecodeFrom(&slice);
-    if (!s.ok()) return s;
+    if (cache_files) {
+      files_.insert(std::make_pair(zoneFile->GetFilename(), zoneFile));
+      if (zoneFile->GetID() >= next_file_id_)
+        next_file_id_ = zoneFile->GetID() + 1;
+    }
   }
 
   return Status::OK();
@@ -850,6 +835,7 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
   Slice data;
   Status s;
   bool done = false;
+  bool cache_files;
 
   while (!done) {
     IOStatus rs = log->ReadRecord(&record, &scratch);
@@ -870,7 +856,8 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
     switch (tag) {
       case kCompleteFilesSnapshot:
         ClearFiles();
-        s = DecodeSnapshotFromAndNoCacheFiles(&data);
+        cache_files = false;
+        s = DecodeSnapshotFrom(&data, cache_files);
         if (!s.ok()) {
           Warn(logger_, "Could not decode complete snapshot: %s",
                s.ToString().c_str());
@@ -890,7 +877,8 @@ Status ZenFS::RecoverFromSnapshotZone(ZenMetaLog* log) {
 
   if (found_one_snapshot) {
     // decode snapshot and cache files
-    s = DecodeSnapshotFrom(&last_valid_snapshot_record);
+    cache_files = true;
+    s = DecodeSnapshotFrom(&last_valid_snapshot_record, cache_files);
 
     if (!s.ok()) {
       Warn(logger_, "Could not decode complete snapshot: %s",
@@ -970,6 +958,7 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
   Slice data;
   Status s;
   bool done = false;
+  bool cache_files;
 
   while (!done) {
     IOStatus rs = log->ReadRecord(&record, &scratch);
@@ -990,7 +979,8 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
     switch (tag) {
       case kCompleteFilesSnapshot:
         ClearFiles();
-        s = DecodeSnapshotFrom(&data);
+        cache_files = true;
+        s = DecodeSnapshotFrom(&data, cache_files);
         if (!s.ok()) {
           Warn(logger_, "Could not decode complete snapshot: %s",
                s.ToString().c_str());
