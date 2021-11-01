@@ -64,6 +64,7 @@ Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
   lifetime_ = Env::WLTH_NOT_SET;
   used_capacity_ = 0;
   capacity_ = 0;
+  bg_processing_ = false;
   if (!(zbd_zone_full(z) || zbd_zone_offline(z) || zbd_zone_rdonly(z)))
     capacity_ = zbd_zone_capacity(z) - (zbd_zone_wp(z) - zbd_zone_start(z));
 
@@ -113,7 +114,7 @@ IOStatus Zone::Reset() {
   struct zbd_zone z;
   int ret;
 
-  assert(!IsUsed());
+  // assert(!IsUsed());
 
   ret = zbd_reset_zones(zbd_->GetWriteFD(), start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone reset failed\n");
@@ -140,7 +141,7 @@ IOStatus Zone::Finish() {
   int fd = zbd_->GetWriteFD();
   int ret;
 
-  assert(!open_for_write_);
+  // assert(!open_for_write_);
 
   ret = zbd_finish_zones(fd, start_, zone_sz);
   if (ret) return IOStatus::IOError("Zone finish failed\n");
@@ -581,6 +582,7 @@ IOStatus ZonedBlockDevice::Open(bool readonly) {
   start_time_ = time(NULL);
 
   meta_worker_.reset(new BackgroundWorker());
+  data_worker_.reset(new BackgroundWorker());
 
   return IOStatus::OK();
 }
@@ -752,13 +754,10 @@ void ZonedBlockDevice::ResetUnusedIOZones() {
 Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool is_wal) {
   Zone *allocated_zone = nullptr;
   Zone *finish_victim = nullptr;
-  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
-  int new_zone = 0;
+  int limit = max_nr_active_io_zones_ - (is_wal ? 0 : 1);
+  int new_zone;
+  unsigned int best_diff;
   Status s;
-
-  // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
-  int reserved_zones = 1;
-
 
   auto *reporter_total = is_wal ? &io_alloc_wal_latency_reporter_
           : &io_alloc_non_wal_latency_reporter_;
@@ -768,165 +767,132 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   io_alloc_qps_reporter_.AddCount(1);
 
-  auto t0 = std::chrono::system_clock::now();
+  std::chrono::time_point<std::chrono::system_clock> t0, t1, t2, t3;
+  
+  t0 = std::chrono::system_clock::now();
 
-  // For general data, we need both two locks, so the general data thread
-  // can give up lock to WAL thread.
-  if (!is_wal) {
-    io_zones_mtx_.lock();
-  } else {
-    wal_zone_allocating_++;
-  }
-
-  /* Make sure we are below the zone open limit */
-  {
-    std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-    zone_resources_.wait(lk, [this, is_wal, reserved_zones, file_lifetime] {
-      if (is_wal) {
-        return open_io_zones_.load() < max_nr_open_io_zones_;
-      } else {
-        return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
-      }
-      return false;
-    });
-  }
-
-  // For general files, it needs both io mutex & wal mutex.
-  wal_zones_mtx_.lock();
   if (is_wal) {
-    wal_zone_allocating_--;
+    wal_zone_allocating_++;
+  } else {
+    io_zones_mtx_.lock();
   }
+
+  t1 = std::chrono::system_clock::now();
+
   LatencyHistGuard guard_actual(reporter_actual);
+  for (bool retry = true; retry;) {
+    new_zone = 0;
+    /* Reset any unused zones and finish used zones under capacity treshold*/
+    for (int i = 0; i < io_zones_.size(); i++) {
+      const auto z = io_zones_[i];
+      if (z->bg_processing_ || z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
+        continue;
 
-  auto t1 = std::chrono::system_clock::now();
+      bool expect = false;
+      if (z->bg_processing_.compare_exchange_weak(expect, true)) {
+        if (!z->IsUsed()) {
+          data_worker_->SubmitJob([&, z]() {
+            bool active = !z->IsFull();
+            if (!z->Reset().ok()) Warn(logger_, "Failed resetting zone !");
+            if (active) active_io_zones_--;
+            z->bg_processing_.store(false);
+          });
+          continue;
+        }
 
-  /* Reset any unused zones and finish used zones under capacity treshold*/
-  for (int i = 0; !is_wal && i < io_zones_.size(); i++) {
-    // Unlock wal mutex and give wal thread a chance
-    if (!is_wal && wal_zone_allocating_.load() > 0) {
-      wal_zones_mtx_.unlock();
-      while (wal_zone_allocating_.load() > 0) {
-        std::this_thread::yield();
-        // After we get back, we will re-start the loop in case other thread
-        // changes the state of any zone, may need fine grained tuning.
-        i = 0;
-      }
-
-      // Re-acquire resource mutex under target condition
-      std::unique_lock<std::mutex> lk(zone_resources_mtx_);
-      zone_resources_.wait(lk, [this, reserved_zones] {
-        return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones;
-      });
-
-      wal_zones_mtx_.lock();
-    }
-    const auto z = io_zones_[i];
-    if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed()))
-      continue;
-
-    // Open_for_write = false && valid_data = 0
-    // For most cases, reset takes not too much time
-    if (!z->IsUsed()) {
-      if (!z->IsFull()) active_io_zones_--;
-      s = z->Reset();
-
-      if (!s.ok()) {
-        Warn(logger_, "Failed resetting zone !");
-      }
-      // For wal file, we only reset once.
-      // if (is_wal) break;
-
-      continue;
-    }
-
-    // Finish a almost FULL zone is costless
-    if (!is_wal && (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
-      /* If there is less than finish_threshold_% remaining capacity in a
-       * non-open-zone, finish the zone */
-      s = z->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
-    }
-
-    // Find a victim with the smallest capacity.
-    if (!z->IsFull()) {
-      if (finish_victim == nullptr) {
-        finish_victim = z;
-      } else if (finish_victim->capacity_ > z->capacity_) {
-        finish_victim = z;
+        /* If there is less than finish_threshold_% remaining capacity in a
+         * non-open-zone, finish the zone in the background */
+        if (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100)) {
+          data_worker_->SubmitJob([&, z]() {
+            if (!z->Finish().ok()) Warn(logger_, "Failed finishing zone");
+            active_io_zones_--;
+            z->bg_processing_.store(false);
+          });
+          continue;
+        }
+        z->bg_processing_.store(false);
       }
     }
-  }
 
-  /* Try to fill an already open zone(with the best life time diff) */
-  for (const auto z : io_zones_) {
-    if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
-      unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
-      if (diff <= best_diff) {
-        allocated_zone = z;
-        best_diff = diff;
-      }
-    }
-  }
-
-  auto t2 = std::chrono::system_clock::now();
-
-  // If we did not find a good match, allocate an empty one
-  if (best_diff >= LIFETIME_DIFF_NOT_GOOD) {
-    // TODO(guokuankuan) We should find a better way to sacrifice zone victim.
-    /* If we at the active io zone limit, finish an open zone(if available) with
-     * least capacity left
-    if (active_io_zones_.load() == max_nr_active_io_zones_ &&
-        finish_victim != nullptr) {
-      s = finish_victim->Finish();
-      if (!s.ok()) {
-        Warn(logger_, "Failed finishing zone");
-      }
-      active_io_zones_--;
-      Warn(
-          logger_,
-          "active zone limit reached, and <start: 0x%lx> is forced to finish\n",
-          finish_victim->start_);
-    }
-    */
-
-    if (active_io_zones_.load() < max_nr_active_io_zones_) {
-      for (const auto z : io_zones_) {
-        if ((!z->open_for_write_) && z->IsEmpty()) {
-          z->lifetime_ = file_lifetime;
+    best_diff = LIFETIME_DIFF_NOT_GOOD;
+    /* Try to fill an already open zone(with the best life time diff) */
+    for (const auto z : io_zones_) {
+      if (z->bg_processing_.load()) continue;
+      if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
+        unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
+        if (diff <= best_diff) {
           allocated_zone = z;
-          active_io_zones_++;
-          new_zone = 1;
-          break;
+          best_diff = diff;
+        }
+      }
+    }
+
+    t2 = std::chrono::system_clock::now();
+
+    if (allocated_zone && best_diff < LIFETIME_DIFF_NOT_GOOD) {
+      bool expect = false;
+      if (allocated_zone->open_for_write_.compare_exchange_weak(expect, true)) {
+        retry = false;
+        open_io_zones_++;
+        break;
+      } else {
+        allocated_zone = nullptr;
+      }
+    }
+
+    // If we did not find a good match, allocate an empty one
+    long active = active_io_zones_.load();
+    if (active < limit) {
+      for (const auto z : io_zones_) {
+        if (z->bg_processing_.load()) continue;
+        if ((!z->open_for_write_) && z->IsEmpty()) {
+          bool expect = false;
+          if (z->open_for_write_.compare_exchange_weak(expect, true)) {
+            z->lifetime_ = file_lifetime;
+            allocated_zone = z;
+            new_zone = 1;
+            break;
+          }
+        }
+      }
+      if (allocated_zone) {
+        while (new_zone != 0) {
+          active = active_io_zones_.load();
+          if (active >= limit) {
+            allocated_zone->open_for_write_.store(false);
+            allocated_zone = nullptr;
+            retry = true;
+            break;
+          }
+          if (active_io_zones_.compare_exchange_weak(active, active + 1)) {
+            open_io_zones_++;
+            retry = false;
+            break;
+          }
         }
       }
     }
   }
 
-  if (allocated_zone) {
-    assert(!allocated_zone->open_for_write_);
-    allocated_zone->open_for_write_ = true;
-    open_io_zones_++;
-    Debug(logger_, "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n", new_zone,
-          allocated_zone->start_, allocated_zone->wp_, allocated_zone->lifetime_, file_lifetime);
-  }
-
-	LogZoneStats();
-  wal_zones_mtx_.unlock();
-  if (!is_wal) {
+  
+  if (is_wal) {
+    wal_zone_allocating_--;
+  } else {
     io_zones_mtx_.unlock();
   }
 
-  auto t5 = std::chrono::system_clock::now();
+  Debug(logger_, "Allocating zone(new=%d) start: 0x%lx wp: 0x%lx lt: %d file lt: %d\n", new_zone,
+          allocated_zone->start_, allocated_zone->wp_, allocated_zone->lifetime_, file_lifetime);
+	LogZoneStats();
+
+  t3 = std::chrono::system_clock::now();
 
   open_zones_reporter_.AddRecord(open_io_zones_);
   active_zones_reporter_.AddRecord(active_io_zones_);
 
   std::stringstream ss;
   ss << " is_wal = " << is_wal << " a/o zones " << active_io_zones_.load() << "," << open_io_zones_.load()
-     << " lock wait: " << TimeDiff(t0, t1) << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t5)
+     << " lock wait: " << TimeDiff(t0, t1) << ", reset: " << TimeDiff(t1, t2) << ", other: " << TimeDiff(t2, t3)
      << ", wal_alloc: " << wal_zone_allocating_.load()
 					<< ", wlfh: "<< file_lifetime << "\n";
   Info(logger_, "%s", ss.str().c_str());

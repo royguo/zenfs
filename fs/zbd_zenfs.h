@@ -66,7 +66,8 @@ class Zone {
   uint64_t capacity_; /* remaining capacity */
   uint64_t max_capacity_;
   uint64_t wp_;
-  bool open_for_write_;
+  std::atomic<bool> open_for_write_;
+  std::atomic<bool> bg_processing_;
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
@@ -169,7 +170,6 @@ class ZonedBlockDevice {
   uint32_t finish_threshold_ = 0;
 
   std::shared_ptr<BackgroundWorker> data_worker_;
-  std::list<Zone *> active_zones_list_;
   std::mutex active_zone_list_mtx_;
 
   std::atomic<int> fg_request_;
