@@ -493,9 +493,9 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
   LatencyHistGuard guard(zoneFile_->is_wal_
-                             ? &zoneFile_->GetZbd()->metrics_->fg_sync_latency_reporter_
-                             : &zoneFile_->GetZbd()->metrics_->bg_sync_latency_reporter_);
-  zoneFile_->GetZbd()->metrics_->sync_qps_reporter_.AddCount(1);
+                             ? &zoneFile_->GetMetrics()->fg_sync_latency_reporter_
+                             : &zoneFile_->GetMetrics()->bg_sync_latency_reporter_);
+  zoneFile_->GetMetrics()->sync_qps_reporter_.AddCount(1);
 
   buffer_mtx_.lock();
   uint64_t wp0 = wp;
@@ -638,15 +638,16 @@ IOStatus ZonedWritableFile::Append(const Slice& data,
                                    const IOOptions& /*options*/,
                                    IODebugContext* /*dbg*/) {
   IOStatus s;
-  LatencyHistGuard guard(&zoneFile_->GetZbd()->metrics_->write_latency_reporter_);
-  zoneFile_->GetZbd()->metrics_->write_qps_reporter_.AddCount(1);
-  zoneFile_->GetZbd()->metrics_->write_throughput_reporter_.AddCount(data.size());
+  zoneFile_->GetMetrics()->write_qps_reporter_.AddCount(1);
+  zoneFile_->GetMetrics()->write_throughput_reporter_.AddCount(data.size());
 
   if (buffered) {
+				LatencyHistGuard guard(&zoneFile_->GetMetrics()->bg_write_latency_reporter_);
     buffer_mtx_.lock();
     s = BufferedWrite(data);
     buffer_mtx_.unlock();
   } else {
+				LatencyHistGuard guard(&zoneFile_->GetMetrics()->fg_write_latency_reporter_);
     s = zoneFile_->Append((void*)data.data(), data.size(), data.size());
     if (s.ok()) wp += data.size();
   }

@@ -339,8 +339,7 @@ void BackgroundWorker::SubmitJob(std::unique_ptr<BackgroundJob> &&job) {
 //    : ZonedBlockDevice(bdevname, logger, "", std::make_shared<ByteDanceMetricsReporterFactory>()) {}
 
 ZonedBlockDevice::ZonedBlockDevice(std::string bdevname, std::shared_ptr<Logger> logger)
-    : filename_("/dev/" + bdevname),
-      logger_(logger) {
+    : filename_("/dev/" + bdevname), logger_(logger) {
   Info(logger_, "New Zoned Block Device: %s (with metrics enabled)", filename_.c_str());
 }
 
@@ -507,6 +506,16 @@ uint64_t ZonedBlockDevice::GetFreeSpace() {
   return free;
 }
 
+int ZonedBlockDevice::GetResetableZones() {
+  int zones = 0;
+  for (const auto z : io_zones_) {
+    if (z->IsFull() && z->used_capacity_ == 0) {
+      zones++;
+    }
+  }
+  return zones;
+}
+
 uint64_t ZonedBlockDevice::GetUsedSpace() {
   uint64_t used = 0;
   for (const auto z : io_zones_) {
@@ -518,20 +527,47 @@ uint64_t ZonedBlockDevice::GetUsedSpace() {
 uint64_t ZonedBlockDevice::GetReclaimableSpace() {
   uint64_t reclaimable = 0;
   for (const auto z : io_zones_) {
-    if (z->IsFull()) reclaimable += (z->max_capacity_ - z->used_capacity_);
+    // if (z->IsFull()) reclaimable += (z->max_capacity_ - z->used_capacity_);
+    // Not only count full zones, but also open zones.
+    uint64_t zone_written_size = (z->wp_ - z->start_);
+    reclaimable += (zone_written_size - z->used_capacity_);
   }
   return reclaimable;
 }
 
 void ZonedBlockDevice::ReportSpaceUtilization() {
-  Info(logger_, "zbd free space %lu GB MkFS\n", GetFreeSpace() / (1024 * 1024 * 1024));
-  metrics_->zbd_free_space_reporter_.AddRecord(GetFreeSpace() / (1024 * 1024 * 1024));
+  auto free_space = GetFreeSpace() >> 30;
+  Info(logger_, "zbd free space %lu GB \n", free_space);
+  metrics_->zbd_free_space_reporter_.AddRecord(free_space);
 
-  Info(logger_, "zbd used space %lu GB MkFS\n", GetUsedSpace() / (1024 * 1024 * 1024));
-  metrics_->zbd_used_space_reporter_.AddRecord(GetUsedSpace() / (1024 * 1024 * 1024));
+  auto used_space = GetUsedSpace() >> 30;
+  Info(logger_, "zbd used(valid) space %lu GB\n", used_space);
+  metrics_->zbd_used_space_reporter_.AddRecord(used_space);
 
-  Info(logger_, "zbd reclaimable space %lu GB MkFS\n", GetUsedSpace() / (1024 * 1024 * 1024));
-  metrics_->zbd_reclaimable_space_reporter_.AddRecord(GetReclaimableSpace() / (1024 * 1024 * 1024));
+  auto reclaimable_space = GetReclaimableSpace() >> 30;
+  Info(logger_, "zbd reclaimable space %lu GB\n", reclaimable_space);
+  metrics_->zbd_reclaimable_space_reporter_.AddRecord(reclaimable_space);
+
+  auto resetable_zones = GetResetableZones();
+  Info(logger_, "zbd resetable zones %d\n", resetable_zones);
+  metrics_->zbd_resetable_zones_reporter_.AddRecord(resetable_zones);
+
+  // log garbage distribution
+  // garbage percent: [0%, <10%, <20% ... <100%, 100%]
+  int zone_gc_stat[12] = {0};
+  for (const auto z : io_zones_) {
+    if (z->IsEmpty()) {
+      zone_gc_stat[0]++;
+      continue;
+    }
+    double garbage_rate = double(z->wp_ - z->start_ - z->used_capacity_) / z->max_capacity_;
+    int idx = int((garbage_rate + 0.1) * 10);
+    zone_gc_stat[idx]++;
+  }
+
+  Info(logger_, "Zone Garbage Stats: [%d %d %d %d %d %d %d %d %d %d %d %d]\n", zone_gc_stat[0], zone_gc_stat[1],
+       zone_gc_stat[2], zone_gc_stat[3], zone_gc_stat[4], zone_gc_stat[5], zone_gc_stat[6], zone_gc_stat[7],
+       zone_gc_stat[8], zone_gc_stat[9], zone_gc_stat[10], zone_gc_stat[11]);
 }
 
 void ZonedBlockDevice::LogZoneStats() {
@@ -576,6 +612,7 @@ void ZonedBlockDevice::LogZoneUsage() {
 
 ZonedBlockDevice::~ZonedBlockDevice() {
   meta_worker_.reset(nullptr);
+  data_worker_.reset(nullptr);
 
   for (const auto z : op_zones_) {
     delete z;
@@ -661,8 +698,10 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
   // We reserve one more free zone for WAL files in case RocksDB delay close WAL files.
   int reserved_zones = 1;
 
-  auto *reporter_total = is_wal ? &metrics_->io_alloc_wal_latency_reporter_ : &metrics_->io_alloc_non_wal_latency_reporter_;
-  auto *reporter_actual = is_wal ? &metrics_->io_alloc_wal_actual_latency_reporter_ : &metrics_->io_alloc_non_wal_actual_latency_reporter_;
+  auto *reporter_total =
+      is_wal ? &metrics_->io_alloc_wal_latency_reporter_ : &metrics_->io_alloc_non_wal_latency_reporter_;
+  auto *reporter_actual =
+      is_wal ? &metrics_->io_alloc_wal_actual_latency_reporter_ : &metrics_->io_alloc_non_wal_actual_latency_reporter_;
   LatencyHistGuard guard_total(reporter_total);
 
   metrics_->io_alloc_qps_reporter_.AddCount(1);
