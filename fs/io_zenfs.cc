@@ -441,11 +441,10 @@ ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
   buffer_pos = 0;
 
   zoneFile_ = zoneFile;
-  // For non-wal files, we uses a larger buffer size to fit rocksdb
-  // bytes_per_sync.
-  if (!zoneFile_->is_wal_) {
-    buffer_sz = block_sz * 256;
-  }
+  // For SST files, we use larger buffer size
+  // if (!zoneFile_->is_wal_) {
+  //		buffer_sz = block_sz * 128;
+  // }
 
   // TODO: add an Open() method so we can handle out of memory gracefully
   if (buffered) {
@@ -489,6 +488,7 @@ IOStatus ZonedWritableFile::Truncate(uint64_t size,
   return IOStatus::OK();
 }
 
+
 IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
@@ -507,11 +507,12 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
 
   if (!s.ok()) return s;
 
-  // RocksDB sync an alread synced file (empty buffer)
+  // Prevent RocksDB from sycning empty buffer.
   if (wp0 != wp) {
     zoneFile_->PushExtent();
     s = metadata_writer_->Persist(zoneFile_);
   }
+
   return s;
 }
 
@@ -555,7 +556,7 @@ IOStatus ZonedWritableFile::FlushBuffer() {
   if (pad_sz) memset((char*)buffer + buffer_pos, 0x0, pad_sz);
 
   wr_sz = buffer_pos + pad_sz;
-  s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos);
+  s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos, true);
   if (!s.ok()) {
     return s;
   }
@@ -640,14 +641,15 @@ IOStatus ZonedWritableFile::Append(const Slice& data,
   IOStatus s;
   zoneFile_->GetMetrics()->write_qps_reporter_.AddCount(1);
   zoneFile_->GetMetrics()->write_throughput_reporter_.AddCount(data.size());
+  LatencyHistGuard guard(zoneFile_->is_wal_
+                             ? &zoneFile_->GetMetrics()->fg_write_latency_reporter_
+                             : &zoneFile_->GetMetrics()->bg_write_latency_reporter_);
 
   if (buffered) {
-				LatencyHistGuard guard(&zoneFile_->GetMetrics()->bg_write_latency_reporter_);
     buffer_mtx_.lock();
     s = BufferedWrite(data);
     buffer_mtx_.unlock();
   } else {
-				LatencyHistGuard guard(&zoneFile_->GetMetrics()->fg_write_latency_reporter_);
     s = zoneFile_->Append((void*)data.data(), data.size(), data.size());
     if (s.ok()) wp += data.size();
   }

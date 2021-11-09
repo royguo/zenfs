@@ -60,7 +60,9 @@ class Zone {
   Env::WriteLifeTimeHint lifetime_;
   std::atomic<long> used_capacity_;
   struct zenfs_aio_ctx wr_ctx;
-  std::mutex reset_mtx_;
+
+		// If current zone is been resetting or finishing.
+		std::atomic<bool> processing_{false};
 
   IOStatus Reset();
   IOStatus Finish();
@@ -194,7 +196,7 @@ class ZonedBlockDevice {
   Zone *AllocateMetaZone();
   Zone *AllocateSnapshotZone();
 
-  void FinishOrReset(Zone *z, bool reset);
+  void FinishOrReset(Zone *z, bool reset = false);
 
   int GetResetableZones();
   uint64_t GetFreeSpace();

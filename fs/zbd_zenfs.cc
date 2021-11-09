@@ -121,7 +121,6 @@ IOStatus Zone::Reset() {
   ret = zbd_report_zones(zbd_->GetReadFD(), start_, zone_sz, ZBD_RO_ALL, &z, &report);
 
   if (ret || (report != 1)) {
-    return IOStatus::IOError("Zone report failed\n");
   }
 
   if (zbd_zone_offline(&z))
@@ -171,6 +170,7 @@ IOStatus Zone::Close() {
 IOStatus Zone::Append(char *data, uint32_t size) {
   char *ptr = data;
   uint32_t left = size;
+  int step = 128 << 10; // 128KB per write
   int fd = zbd_->GetWriteFD();
   int ret;
   IOStatus s;
@@ -184,8 +184,14 @@ IOStatus Zone::Append(char *data, uint32_t size) {
   if (!s.ok()) return s;
 
   while (left) {
-    ret = pwrite(fd, ptr, size, wp_);
-    if (ret < 0) return IOStatus::IOError("Write failed");
+	if(left > step) {
+	  ret = pwrite(fd, ptr, step, wp_);
+	} else {
+	  ret = pwrite(fd, ptr, left, wp_);
+	}
+	if (ret < 0) {
+	  return IOStatus::IOError("Write failed");
+	}
 
     ptr += ret;
     wp_ += ret;
@@ -708,8 +714,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   auto t0 = std::chrono::system_clock::now();
 
-  // For general data, we need both two locks, so the general data thread
-  // can give up lock to WAL thread.
+  // For general data, we need both two locks. 
+  // The general data thread can give up lock to WAL thread during iteration.
   if (!is_wal) {
     io_zones_mtx_.lock();
   } else {
@@ -738,7 +744,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   auto t1 = std::chrono::system_clock::now();
 
-  /* Reset any unused zones and finish used zones under capacity treshold*/
+  // Reset any unused zones and finish used zones under capacity threshold
   for (int i = 0; !is_wal && i < io_zones_.size(); i++) {
     // Unlock wal mutex and give wal thread a chance
     if (!is_wal && wal_zone_allocating_.load() > 0) {
@@ -754,12 +760,14 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
       std::unique_lock<std::mutex> lk(zone_resources_mtx_);
       zone_resources_.wait(
           lk, [this, reserved_zones] { return open_io_zones_.load() < max_nr_open_io_zones_ - reserved_zones; });
-
       wal_zones_mtx_.lock();
     }
     const auto z = io_zones_[i];
-    std::unique_lock<std::mutex> reset_lk(z->reset_mtx_, std::try_to_lock);
-    if (!reset_lk.owns_lock() || z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed())) {
+
+	// Not that current function cannot be accessed concurrently, so this is safe.
+	if (z->processing_.load()) continue;
+
+    if (z->open_for_write_ || z->IsEmpty() || (z->IsFull() && z->IsUsed())) {
       continue;
     }
 
@@ -767,30 +775,12 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     // For most cases, reset takes not too much time
     if (!z->IsUsed()) {
       FinishOrReset(z, true /* reset */);
-      // if (!z->IsFull()) active_io_zones_--;
-      // s = z->Reset();
-
-      // if (!s.ok()) {
-      // Warn(logger_, "Failed resetting zone !");
-      // }
-      // For wal file, we only reset once.
-      // if (is_wal) break;
-
       continue;
     }
 
     // Finish a almost FULL zone is costless
     if (!is_wal && (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
-      /* If there is less than finish_threshold_% remaining capacity in a
-       * non-open-zone, finish the zone */
       FinishOrReset(z, false /* reset = 0 */);
-      /*
-s = z->Finish();
-if (!s.ok()) {
-Warn(logger_, "Failed finishing zone");
-}
-active_io_zones_--;
-      */
     }
 
     // Find a victim with the smallest capacity.
@@ -805,10 +795,7 @@ active_io_zones_--;
 
   /* Try to fill an already open zone(with the best life time diff) */
   for (const auto z : io_zones_) {
-    std::unique_lock<std::mutex> reset_lk(z->reset_mtx_, std::try_to_lock);
-    if (!reset_lk.owns_lock()) {
-      continue;
-    }
+				if(z->processing_) continue;
     if ((!z->open_for_write_) && (z->used_capacity_ > 0) && !z->IsFull()) {
       unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
       if (diff <= best_diff) {
@@ -841,11 +828,7 @@ active_io_zones_--;
 
     if (active_io_zones_.load() < max_nr_active_io_zones_) {
       for (const auto z : io_zones_) {
-        std::unique_lock<std::mutex> reset_lk(z->reset_mtx_, std::try_to_lock);
-        if (!reset_lk.owns_lock()) {
-          continue;
-        }
-
+								if(z->processing_) continue;
         if ((!z->open_for_write_) && z->IsEmpty()) {
           z->lifetime_ = file_lifetime;
           allocated_zone = z;
@@ -909,7 +892,7 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"meta\":";
   EncodeJsonZone(json_stream, op_zones_);
-  json_stream << "\"meta snapshot\":";
+  json_stream << ",\"meta_snapshot\":";
   EncodeJsonZone(json_stream, snapshot_zones_);
   json_stream << ",\"io\":";
   EncodeJsonZone(json_stream, io_zones_);
@@ -917,9 +900,10 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
 }
 
 // Callers should make sure the target zone is not been used before submitting this job.
+// Before entering this function. target zone's mutex was already taken.
 void ZonedBlockDevice::FinishOrReset(Zone *z, bool reset) {
+		z->processing_ = true;
   data_worker_->SubmitJob([&, z]() {
-    std::unique_lock<std::mutex> lk(z->reset_mtx_);
     // double check
     if (z->open_for_write_ || z->IsEmpty()) {
       return;
@@ -927,18 +911,21 @@ void ZonedBlockDevice::FinishOrReset(Zone *z, bool reset) {
 
     pending_bg_work_++;
     bool full = z->IsFull();
-    // Try finish if not full
-    if (!full && !z->Finish().ok()) {
+
+				// Finish only (don't reset)
+    if (!reset && !full && !z->Finish().ok()) {
       Warn(logger_, "Failed finishing zone");
     }
     if (!full) {
       active_io_zones_--;
     }
-    // Rest target zone if neccessary
+
+				// Reset only (no need to finish first)
     if (reset) {
       z->Reset();
     }
     pending_bg_work_--;
+				z->processing_ = false;
   });
 }
 

@@ -411,6 +411,8 @@ IOStatus ZenFS::PersistRecord(ZenMetaLog* meta_writer, std::string* record) {
 }
 
 IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
+		LatencyHistGuard guard(&metrics_->sync_metadata_reporter_);
+
   std::string fileRecord;
   std::string output;
 
