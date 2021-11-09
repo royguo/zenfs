@@ -29,8 +29,15 @@
 #include "rocksdb/metrics_reporter.h"
 #include "util/coding.h"
 #include "zbd_zenfs.h"
+#include "utils.h"
 
 namespace ROCKSDB_NAMESPACE {
+
+inline uint64_t GetCurrentTimeNanos() {
+		return std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::system_clock::now().time_since_epoch())
+				.count();
+}
 
 Status ZoneExtent::DecodeFrom(Slice* input) {
   if (input->size() != (sizeof(start_) + sizeof(length_)))
@@ -375,8 +382,14 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size,
   uint32_t wr_size, offset = 0;
   IOStatus s;
 
+		std::stringstream ss;
+		uint64_t t1 = 0, t2 = 0, t3=0, t4=0, t5=0, t6=0;
+
+		t1 = GetCurrentTimeNanos();
   if (active_zone_ == NULL) {
     active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
+				t2 = GetCurrentTimeNanos();
+				ss << "active zone is empty\t" << (t2-t1) << "\n";
     if (!active_zone_) {
       Warn(logger_,
            "Zone allocation failure upon append starting, filename=%s, "
@@ -388,12 +401,17 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size,
     extent_filepos_ = fileSize;
   }
 
+		t3 = GetCurrentTimeNanos();
   while (left) {
     if (active_zone_->capacity_ == 0) {
       PushExtent();
 
+						auto ta = GetCurrentTimeNanos();
       active_zone_->CloseWR();
+						auto tb = GetCurrentTimeNanos();
       active_zone_ = zbd_->AllocateZone(lifetime_, is_wal_);
+						auto tc = GetCurrentTimeNanos();
+						ss << "Active zone capacity is empty\t CloswWR: " << (tc-tb) << ", Allocate:" << tb - ta << "\n";
       if (!active_zone_) {
         Warn(logger_,
              "Zone allocation failure when appending, filename=%s, left=%d\n",
@@ -410,7 +428,10 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size,
     if (async) {
       s = active_zone_->Append_async((char*)data + offset, wr_size);
     } else {
+						auto te = GetCurrentTimeNanos();
       s = active_zone_->Append((char*)data + offset, wr_size);
+						auto tf = GetCurrentTimeNanos();
+						ss << "Zone Sync Append:" << (tf - te) << ", wr_size = " << wr_size << "bytes \n";
     }
     if (!s.ok()) return s;
 
@@ -418,6 +439,11 @@ IOStatus ZoneFile::Append(void* data, int data_size, int valid_size,
     left -= wr_size;
     offset += wr_size;
   }
+		t4 = GetCurrentTimeNanos();
+
+		if (t4 - t1 > 40000000 && is_wal_) {
+				std::cout << ss.str() << std::endl;
+		}
 
   fileSize -= (data_size - valid_size);
   return IOStatus::OK();
@@ -441,11 +467,10 @@ ZonedWritableFile::ZonedWritableFile(ZonedBlockDevice* zbd, bool _buffered,
   buffer_pos = 0;
 
   zoneFile_ = zoneFile;
-  // For non-wal files, we uses a larger buffer size to fit rocksdb
-  // bytes_per_sync.
-  if (!zoneFile_->is_wal_) {
-    buffer_sz = block_sz * 256;
-  }
+		// For SST files, we use larger buffer size
+		// if (!zoneFile_->is_wal_) {
+		//		buffer_sz = block_sz * 128;
+  // }
 
   // TODO: add an Open() method so we can handle out of memory gracefully
   if (buffered) {
@@ -489,6 +514,7 @@ IOStatus ZonedWritableFile::Truncate(uint64_t size,
   return IOStatus::OK();
 }
 
+
 IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                                   IODebugContext* /*dbg*/) {
   IOStatus s;
@@ -496,22 +522,38 @@ IOStatus ZonedWritableFile::Fsync(const IOOptions& /*options*/,
                              ? &zoneFile_->GetMetrics()->fg_sync_latency_reporter_
                              : &zoneFile_->GetMetrics()->bg_sync_latency_reporter_);
   zoneFile_->GetMetrics()->sync_qps_reporter_.AddCount(1);
+		uint64_t t1 = 0,t2 = 0,t3 = 0,t4 = 0,t5 = 0;
 
+		t1 = GetCurrentTimeNanos();
   buffer_mtx_.lock();
+		t2 = GetCurrentTimeNanos();
   uint64_t wp0 = wp;
   s = FlushBuffer();
+		t3 = GetCurrentTimeNanos();
   if (s.ok()) {
     s = zoneFile_->Sync();
+				t4 = GetCurrentTimeNanos();
   }
   buffer_mtx_.unlock();
 
   if (!s.ok()) return s;
 
-  // RocksDB sync an alread synced file (empty buffer)
+  // Prevent RocksDB from sycning empty buffer.
   if (wp0 != wp) {
     zoneFile_->PushExtent();
     s = metadata_writer_->Persist(zoneFile_);
+				t5 = GetCurrentTimeNanos();
   }
+
+		if(t4 - t1 > 40000000 && zoneFile_->is_wal_) {
+				std::cout << "\nlock time: " << (t2-t1) << std::endl;
+				std::cout << "flush time: " << (t3-t2) << std::endl;
+				std::cout << "sync file time: " << (t4-t3) << std::endl;
+				if(wp0 != wp) {
+						std::cout << " PushExtent() time: " << (t5 - t4) << std::endl;
+				}
+		}
+
   return s;
 }
 
@@ -555,12 +597,15 @@ IOStatus ZonedWritableFile::FlushBuffer() {
   if (pad_sz) memset((char*)buffer + buffer_pos, 0x0, pad_sz);
 
   wr_sz = buffer_pos + pad_sz;
-  s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos);
+		auto t1 = GetCurrentTimeNanos();
+  s = zoneFile_->Append((char*)buffer, wr_sz, buffer_pos, true);
+		auto t2 = GetCurrentTimeNanos();
   if (!s.ok()) {
     return s;
   }
 
   s = zoneFile_->Sync();
+		auto t3 = GetCurrentTimeNanos();
   if (!s.ok()) return s;
 
   if (buffer == b1) {
@@ -572,6 +617,13 @@ IOStatus ZonedWritableFile::FlushBuffer() {
   wp += buffer_pos;
   buffer_pos = 0;
 
+		auto t4 = GetCurrentTimeNanos();
+
+		if(t4 - t1 > 40000000 && zoneFile_->is_wal_) {
+				std::cout << "\t Append: " << t2-t1<<std::endl;
+				std::cout << "\t Sync: " << t3-t2<<std::endl;
+				std::cout << "\t Buffer Switch: " << t4-t3<<std::endl;
+		}
   return IOStatus::OK();
 }
 
@@ -640,14 +692,15 @@ IOStatus ZonedWritableFile::Append(const Slice& data,
   IOStatus s;
   zoneFile_->GetMetrics()->write_qps_reporter_.AddCount(1);
   zoneFile_->GetMetrics()->write_throughput_reporter_.AddCount(data.size());
+  LatencyHistGuard guard(zoneFile_->is_wal_
+                             ? &zoneFile_->GetMetrics()->fg_write_latency_reporter_
+                             : &zoneFile_->GetMetrics()->bg_write_latency_reporter_);
 
   if (buffered) {
-				LatencyHistGuard guard(&zoneFile_->GetMetrics()->bg_write_latency_reporter_);
     buffer_mtx_.lock();
     s = BufferedWrite(data);
     buffer_mtx_.unlock();
   } else {
-				LatencyHistGuard guard(&zoneFile_->GetMetrics()->fg_write_latency_reporter_);
     s = zoneFile_->Append((void*)data.data(), data.size(), data.size());
     if (s.ok()) wp += data.size();
   }

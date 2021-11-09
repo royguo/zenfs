@@ -19,6 +19,7 @@ class BytedanceMetrics {
         fg_sync_latency_reporter_(*factory_->BuildHistReporter(fg_sync_lat_label, bytedance_tags_)),
         bg_sync_latency_reporter_(*factory_->BuildHistReporter(bg_sync_lat_label, bytedance_tags_)),
         meta_alloc_latency_reporter_(*factory_->BuildHistReporter(meta_alloc_lat_label, bytedance_tags_)),
+        sync_metadata_reporter_(*factory_->BuildHistReporter(sync_metadata_lat_label, bytedance_tags_)),
         io_alloc_wal_latency_reporter_(*factory_->BuildHistReporter(io_alloc_wal_lat_label, bytedance_tags_)),
         io_alloc_wal_actual_latency_reporter_(
             *factory_->BuildHistReporter(io_alloc_wal_actual_lat_label, bytedance_tags_)),
@@ -55,6 +56,7 @@ class BytedanceMetrics {
   std::string io_alloc_wal_actual_lat_label = "zenfs_io_alloc_wal_actual_latency";
   std::string io_alloc_non_wal_actual_lat_label = "zenfs_io_alloc_non_wal_actual_latency";
   std::string meta_alloc_lat_label = "zenfs_meta_alloc_latency";
+		std::string sync_metadata_lat_label = "zenfs_metadata_sync_latency";
   std::string roll_lat_label = "zenfs_roll_latency";
 
   std::string write_qps_label = "zenfs_write_qps";
@@ -88,6 +90,7 @@ class BytedanceMetrics {
   LatencyReporter fg_sync_latency_reporter_;
   LatencyReporter bg_sync_latency_reporter_;
   LatencyReporter meta_alloc_latency_reporter_;
+  LatencyReporter sync_metadata_reporter_;
   LatencyReporter io_alloc_wal_latency_reporter_;
   LatencyReporter io_alloc_wal_actual_latency_reporter_;
   LatencyReporter io_alloc_non_wal_latency_reporter_;

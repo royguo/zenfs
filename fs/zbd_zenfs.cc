@@ -55,6 +55,12 @@
 
 namespace ROCKSDB_NAMESPACE {
 
+inline uint64_t GetCurrentTimeNanos() {
+		return std::chrono::duration_cast<std::chrono::nanoseconds>(
+						std::chrono::system_clock::now().time_since_epoch())
+				.count();
+}
+
 Zone::Zone(ZonedBlockDevice *zbd, struct zbd_zone *z)
     : zbd_(zbd),
       start_(zbd_zone_start(z)),
@@ -171,6 +177,7 @@ IOStatus Zone::Close() {
 IOStatus Zone::Append(char *data, uint32_t size) {
   char *ptr = data;
   uint32_t left = size;
+		int step = 128 << 10; // 128KB per write
   int fd = zbd_->GetWriteFD();
   int ret;
   IOStatus s;
@@ -180,18 +187,37 @@ IOStatus Zone::Append(char *data, uint32_t size) {
   assert((size % zbd_->GetBlockSize()) == 0);
 
   /* Make sure we don't have any outstanding writes */
+		std::stringstream ss;
+		auto t1 = GetCurrentTimeNanos();
   s = Sync();
+		auto t2 = GetCurrentTimeNanos();
+		ss << "\t\t Zone::Sync() : " << t2-t1<< "\n";
   if (!s.ok()) return s;
 
   while (left) {
-    ret = pwrite(fd, ptr, size, wp_);
-    if (ret < 0) return IOStatus::IOError("Write failed");
+				auto t3 = GetCurrentTimeNanos();
+
+				if(left > step) {
+						ret = pwrite(fd, ptr, step, wp_);
+				} else {
+						ret = pwrite(fd, ptr, left, wp_);
+				}
+				auto t4 = GetCurrentTimeNanos();
+				ss << "\t\t\t pwrite: " << (t4-t3) << ", ret = " << ret << "\n";
+    if (ret < 0) {
+						std::cout << "step = " << step << ", size = " << size;
+						return IOStatus::IOError("Write failed");
+				}
 
     ptr += ret;
     wp_ += ret;
     capacity_ -= ret;
     left -= ret;
   }
+		auto t5 = GetCurrentTimeNanos();
+		if(t5 - t1 > 40000000) {
+				std::cout << ss.str() << std::endl;
+		}
 
   return IOStatus::OK();
 }
@@ -708,8 +734,8 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
 
   auto t0 = std::chrono::system_clock::now();
 
-  // For general data, we need both two locks, so the general data thread
-  // can give up lock to WAL thread.
+  // For general data, we need both two locks. 
+		// The general data thread can give up lock to WAL thread during iteration.
   if (!is_wal) {
     io_zones_mtx_.lock();
   } else {
@@ -766,6 +792,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     // Now open_for_write = false && valid_data = 0
     // For most cases, reset takes not too much time
     if (!z->IsUsed()) {
+						std::cout << "finishOrReset: reset = 1" << std::endl;
       FinishOrReset(z, true /* reset */);
       // if (!z->IsFull()) active_io_zones_--;
       // s = z->Reset();
@@ -783,6 +810,7 @@ Zone *ZonedBlockDevice::AllocateZone(Env::WriteLifeTimeHint file_lifetime, bool 
     if (!is_wal && (z->capacity_ < (z->max_capacity_ * finish_threshold_ / 100))) {
       /* If there is less than finish_threshold_% remaining capacity in a
        * non-open-zone, finish the zone */
+						std::cout << "finishOrReset: reset = 0" << std::endl;
       FinishOrReset(z, false /* reset = 0 */);
       /*
 s = z->Finish();
@@ -909,7 +937,7 @@ void ZonedBlockDevice::EncodeJson(std::ostream &json_stream) {
   json_stream << "{";
   json_stream << "\"meta\":";
   EncodeJsonZone(json_stream, op_zones_);
-  json_stream << "\"meta snapshot\":";
+  json_stream << ",\"meta_snapshot\":";
   EncodeJsonZone(json_stream, snapshot_zones_);
   json_stream << ",\"io\":";
   EncodeJsonZone(json_stream, io_zones_);
@@ -927,15 +955,19 @@ void ZonedBlockDevice::FinishOrReset(Zone *z, bool reset) {
 
     pending_bg_work_++;
     bool full = z->IsFull();
-    // Try finish if not full
-    if (!full && !z->Finish().ok()) {
+				if(!full) {
+						std::cout << "remind capacity: " << (z->capacity_)  << ", reset: " << reset << std::endl;
+				}
+				// Finish only (don't reset)
+    if (!reset && !full && !z->Finish().ok()) {
       Warn(logger_, "Failed finishing zone");
     }
     if (!full) {
       active_io_zones_--;
     }
-    // Rest target zone if neccessary
+				// Reset only (no need to finish first)
     if (reset) {
+						std::cout << "zone reset ..." << std::endl;
       z->Reset();
     }
     pending_bg_work_--;

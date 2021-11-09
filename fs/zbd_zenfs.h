@@ -194,7 +194,7 @@ class ZonedBlockDevice {
   Zone *AllocateMetaZone();
   Zone *AllocateSnapshotZone();
 
-  void FinishOrReset(Zone *z, bool reset);
+  void FinishOrReset(Zone *z, bool reset = false);
 
   int GetResetableZones();
   uint64_t GetFreeSpace();
