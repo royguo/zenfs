@@ -94,6 +94,9 @@ class ZoneFile {
   void EncodeSnapshotTo(std::string* output) { EncodeTo(output, 0); };
   void EncodeJson(std::ostream& json_stream);
   void MetadataSynced() { nr_synced_extents_ = extents_.size(); };
+  void MetadataUnsynced() { nr_synced_extents_ = 0; };
+
+  IOStatus MigrateExtent(ZoneExtent* ext);
 
   Status DecodeFrom(Slice* input);
   Status MergeUpdate(std::shared_ptr<ZoneFile> update);
@@ -153,6 +156,7 @@ class ZonedWritableFile : public FSWritableFile {
                              IODebugContext* dbg) override;
   virtual IOStatus Fsync(const IOOptions& options,
                          IODebugContext* dbg) override;
+
   bool use_direct_io() const override { return !buffered; }
   bool IsSyncThreadSafe() const override { return true; };
   size_t GetRequiredBufferAlignment() const override {

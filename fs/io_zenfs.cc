@@ -18,6 +18,7 @@
 #include <sys/ioctl.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include <iostream>
 
 #include <string>
 #include <utility>
@@ -732,6 +733,52 @@ size_t ZoneFile::GetUniqueId(char* id, size_t max_size) {
   return static_cast<size_t>(rid - id);
 
   return 0;
+}
+
+IOStatus ZoneFile::MigrateExtent(ZoneExtent* ext) {
+  IOStatus s;
+  /*
+  Zone* zone = nullptr;
+  zbd_->AllocateMigrateZone(&zone, ext->length_);
+
+  if(zone == nullptr) {
+    std::cout << "zone empty ............. " << filename_ << std::endl;
+  }
+
+  SetActiveZone(zone);
+  */
+  /*
+  if(zone->capacity_ < ext->length_) {
+    // If we failed to allocate a zone with enough space, ignore current migration.
+    CloseActiveZone();
+    return IOStatus::Busy("We don't have good fit for current extent, ignore");
+  }
+  */
+
+  /*
+  uint64_t new_start = zone->wp_;
+
+  // Copy data to new zone.
+  int step = 128<<10; // 128KB
+  uint64_t left = ext->length_;
+  char buf[step];
+  Slice result;
+  uint64_t off = ext->start_;
+  
+  while(left > 0) {
+    step = left > step ? step : left;
+    PositionedRead(off, step, &result, buf, true);
+    // write to new zone, all extent data are aligned.
+    zone->Append((char*) buf, step);
+    left -= step;
+    zone->used_capacity_ += step;
+  }
+
+  ext->zone_ = zone;
+  ext->start_ = new_start;
+  */
+  CloseActiveZone();
+  return IOStatus::OK();
 }
 
 size_t ZonedRandomAccessFile::GetUniqueId(char* id, size_t max_size) const {

@@ -1227,34 +1227,76 @@ std::map<std::string, std::string> ListZenFileSystems() {
 
   return zenFileSystems;
 }
-void ZenFS::GetZoneSnapshot(std::vector<ZoneSnapshot>& zones) {
-  ZenFSSnapshotOptions options;
-  if (options.zone_.enabled_) zbd_->GetZoneSnapshot(zones, options);
-}
-void ZenFS::GetZoneFileSnapshot(std::vector<ZoneFileSnapshot>& zone_files) {
-  ZenFSSnapshotOptions options;
-  if (options.zone_file_.enabled_) {
-    std::lock_guard<std::mutex> file_lock(files_mtx_);
-    for (auto& file_it : files_)
-      zone_files.emplace_back(*file_it.second, options);
-  }
-}
+
 void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
                              const ZenFSSnapshotOptions& options) {
-  if (options.zbd_.enabled_) {
-    snapshot.zbd_ = ZBDSnapshot(*zbd_, options);
+  if (options.zbd_) {
+    snapshot.zbd_ = ZBDSnapshot(*zbd_);
   }
-  if (options.zone_.enabled_) zbd_->GetZoneSnapshot(snapshot.zones_, options);
-  if (options.zone_file_.enabled_) {
+  if (options.zone_) {
+    zbd_->GetZoneSnapshot(snapshot.zones_);
+  }
+  if (options.zone_file_) {
     std::lock_guard<std::mutex> file_lock(files_mtx_);
-    for (auto& file_it : files_)
-      snapshot.zone_files_.emplace_back(*file_it.second, options);
+    for (const auto& file_it : files_) {
+      ZoneFile& file = *(file_it.second);
+      // file -> extents mapping
+      snapshot.zone_files_.emplace_back(file);
+      // extent -> file mapping
+      for(auto* ext: file.GetExtents()) {
+        snapshot.extents_.emplace_back(*ext, file.GetFilename());
+      }
+    }
   }
+    
   if (options.trigger_report_) {
-    zbd_->GetMetrics()->ReportSnapshot(snapshot, options);
+    zbd_->GetMetrics()->ReportSnapshot(snapshot);
   }
 
   zbd_->LogGarbageInfo();
+}
+
+void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start, 
+                          uint32_t ext_length, const std::string& fname) {
+  IOStatus s;
+  Info(logger_, "MigrateExtent From [%lu, %d, %lu], fname = %s", 
+                                    ext_start, ext_length, zone_start, fname.data());
+  // Copy old extents to new zones
+  // If the file become expired after copying, we could simply ignore the newly written extent.
+  auto zfile = GetFile(fname);
+  std::vector<ZoneExtent*> old_extents = zfile->GetExtents();
+  for(ZoneExtent* ext: old_extents) {
+    if(ext->start_ == ext_start && ext->length_ == ext_length) {
+      Zone* prev_zone = ext->zone_;
+
+      // Migrate to target extent and update extent after migration
+      uint64_t new_offset;
+      s = zfile->MigrateExtent(ext);
+      // if(s.code() == IOStatus::Code::kBusy) {
+      //  Info(logger_, "Migration ignored, zone too busy...");
+      // }
+      Info(logger_, "MigrateExtent to [%lu, %d, %lu], fname = %s", 
+                                      ext->start_, ext->length_, ext->zone_->start_, fname.data());
+      /*
+      // Add a file deletion record
+      std::string record;
+      EncodeFileDeletionTo(zfile, &record);
+      s = PersistRecord(record);
+      assert(s.ok());
+
+      // Add a file creation record again
+      zfile->MetadataUnsynced();
+      s = SyncFileMetadata(zfile);
+      assert(s.ok());
+
+      // Reduce the original zone's used_capacity, new zone's used_capacity will be 
+      // updated inside the ZoneFile::MigrateExtent.
+      // prev_zone->used_capacity_ -= ext->length_;
+      // We only need to migarte one extent each time.
+      break;
+      */
+    }
+  }
 }
 
 extern "C" FactoryFunc<FileSystem> zenfs_filesystem_reg;
