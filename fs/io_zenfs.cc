@@ -737,24 +737,16 @@ size_t ZoneFile::GetUniqueId(char* id, size_t max_size) {
 
 IOStatus ZoneFile::MigrateExtent(ZoneExtent* ext) {
   IOStatus s;
-  /*
   Zone* zone = nullptr;
   zbd_->AllocateMigrateZone(&zone, ext->length_);
 
   if(zone == nullptr) {
+    zbd_->FinishMigration(zone);
     std::cout << "zone empty ............. " << filename_ << std::endl;
+    return IOStatus::Busy("We don't have a good fit for current extent, ignore");
   }
 
-  SetActiveZone(zone);
-  */
-  /*
-  if(zone->capacity_ < ext->length_) {
-    // If we failed to allocate a zone with enough space, ignore current migration.
-    CloseActiveZone();
-    return IOStatus::Busy("We don't have good fit for current extent, ignore");
-  }
-  */
-
+  // SetActiveZone(zone);
   /*
   uint64_t new_start = zone->wp_;
 
@@ -777,7 +769,8 @@ IOStatus ZoneFile::MigrateExtent(ZoneExtent* ext) {
   ext->zone_ = zone;
   ext->start_ = new_start;
   */
-  CloseActiveZone();
+  // CloseActiveZone();
+  zbd_->FinishMigration(zone);
   return IOStatus::OK();
 }
 

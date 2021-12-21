@@ -276,12 +276,12 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   if (info.max_nr_active_zones == 0)
     max_nr_active_io_zones_ = info.nr_zones;
   else
-    max_nr_active_io_zones_ = info.max_nr_active_zones - 1;
+    max_nr_active_io_zones_ = info.max_nr_active_zones - 2;
 
   if (info.max_nr_open_zones == 0)
     max_nr_open_io_zones_ = info.nr_zones;
   else
-    max_nr_open_io_zones_ = info.max_nr_open_zones - 1;
+    max_nr_open_io_zones_ = info.max_nr_open_zones - 2;
 
   Info(logger_, "Zone block device nr zones: %u max active: %u max open: %u \n",
        info.nr_zones, info.max_nr_active_zones, info.max_nr_open_zones);
@@ -612,12 +612,15 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone() {
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
+      Info(logger_, "victim acquired, z = %lu", z->start_);
       if (z->IsEmpty() || z->IsFull()) {
+        Info(logger_, "victim empty or full, z = %lu", z->start_);
         s = z->CheckRelease();
         if (!s.ok()) return s;
         continue;
       }
       if (finish_victim == nullptr) {
+        Info(logger_, "victim valid, z = %lu", z->start_);
         finish_victim = z;
         continue;
       }
@@ -629,10 +632,17 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone() {
         s = z->CheckRelease();
         if (!s.ok()) return s;
       }
+    } else {
+        Info(logger_, "victim not acquired, z = %lu", z->start_);
     }
   }
 
   if (finish_victim == nullptr) {
+    int busy = 0;
+    for(auto* z: io_zones) {
+      if(z->IsBusy()) { busy++; }
+    }
+    Info(logger_, "victim busy count: %d", busy);
     return IOStatus::IOError("Failed to find a zone to finish");
   }
 
@@ -707,6 +717,55 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
   return IOStatus::OK();
 }
 
+IOStatus ZonedBlockDevice::FinishMigration(Zone* zone) {
+  std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
+  migrating_ = false;
+  migrate_resource_.notify_one();
+  if(zone != nullptr) {
+    zone->CheckRelease();
+    Info(logger_, "Release migrate zone, zone start: : %lu", zone->start_);
+  }
+  return IOStatus::OK();
+}
+
+IOStatus ZonedBlockDevice::AllocateMigrateZone(Zone **out_zone, uint32_t min_capacity) {
+  int busy = 0;
+  for(auto* z: io_zones) {
+    if(z->IsBusy()) { busy++; }
+  }
+  Info(logger_, "busy count: %d", busy);
+
+  // We only allow one migration to be processed at the same time
+  std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
+  migrate_resource_.wait(lock_, [this] { return !migrating_;});
+
+  migrating_ = true;
+  for(auto* z: io_zones) {
+    if(z->IsBusy()) { continue; }
+
+    if(z->Acquire()) {
+      Info(logger_, "Acquire migrate zone, zone start : %lu", z->start_);
+      if(z->IsEmpty() || z->capacity_ < min_capacity) {
+        Info(logger_, "Release migrate zone, zone start : %lu", z->start_);
+        z->CheckRelease();
+        continue;
+      }
+
+      Info(logger_, "Acquire migrate zone without release, zone start : %lu", z->start_);
+      *out_zone = z;
+    }
+  }
+
+  busy = 0;
+  for(auto* z: io_zones) {
+    if(z->IsBusy()) { busy++;}
+  }
+  Info(logger_, "busy count after: %d", busy);
+  Info(logger_, "No migrate zone found!");
+
+  return IOStatus::OK();
+}
+
 IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
                                           IOType io_type, Zone **out_zone) {
   Zone *allocated_zone = nullptr;
@@ -753,6 +812,7 @@ IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
      * and open a new one
      */
     if (allocated_zone != nullptr) {
+      Info(logger_, "victim allocate zone ok, best_diff = %d, got_t=%d", best_diff, got_token);
       if (!got_token && best_diff == LIFETIME_DIFF_COULD_BE_WORSE) {
         Debug(logger_,
               "Allocator: avoided a finish by relaxing lifetime diff "

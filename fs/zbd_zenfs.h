@@ -99,6 +99,10 @@ class ZonedBlockDevice {
   std::mutex zone_deferred_status_mutex_;
   IOStatus zone_deferred_status_;
 
+  std::condition_variable migrate_resource_;
+  std::mutex migrate_zone_mtx_;
+  std::atomic<bool> migrating_ {false};
+
   unsigned int max_nr_active_io_zones_;
   unsigned int max_nr_open_io_zones_;
 
@@ -155,6 +159,10 @@ class ZonedBlockDevice {
   std::shared_ptr<ZenFSMetrics> GetMetrics() { return metrics_; }
 
   void GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot);
+
+  IOStatus FinishMigration(Zone* zone);
+
+  IOStatus AllocateMigrateZone(Zone **out_zone, uint32_t min_capacity);
 
  private:
   std::string ErrorToString(int err);

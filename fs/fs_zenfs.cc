@@ -1264,6 +1264,10 @@ void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start,
   // Copy old extents to new zones
   // If the file become expired after copying, we could simply ignore the newly written extent.
   auto zfile = GetFile(fname);
+  if(zfile->IsOpenForWR()) {
+    return;
+  }
+
   std::vector<ZoneExtent*> old_extents = zfile->GetExtents();
   for(ZoneExtent* ext: old_extents) {
     if(ext->start_ == ext_start && ext->length_ == ext_length) {
