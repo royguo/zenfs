@@ -1259,46 +1259,55 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
 void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start, 
                           uint32_t ext_length, const std::string& fname) {
   IOStatus s;
-  Info(logger_, "MigrateExtent From [%lu, %d, %lu], fname = %s", 
+  Info(logger_, "MigrateExtent From [ext_start: %lu, ext_length: %d, zone_start: %lu], fname = %s", 
                                     ext_start, ext_length, zone_start, fname.data());
-  // Copy old extents to new zones
-  // If the file become expired after copying, we could simply ignore the newly written extent.
+  // The file may be deleted by other threads, better double check.
   auto zfile = GetFile(fname);
-  if(zfile->IsOpenForWR()) {
+  if(zfile == nullptr || zfile->IsOpenForWR()) {
     return;
   }
 
   std::vector<ZoneExtent*> old_extents = zfile->GetExtents();
   for(ZoneExtent* ext: old_extents) {
     if(ext->start_ == ext_start && ext->length_ == ext_length) {
-      Zone* prev_zone = ext->zone_;
+      Zone* old_zone = ext->zone_;
 
-      // Migrate to target extent and update extent after migration
-      uint64_t new_offset;
+      // Migrate extent (copy data to new zone)
       s = zfile->MigrateExtent(ext);
-      // if(s.code() == IOStatus::Code::kBusy) {
-      //  Info(logger_, "Migration ignored, zone too busy...");
-      // }
-      Info(logger_, "MigrateExtent to [%lu, %d, %lu], fname = %s", 
+      if(s.code() == IOStatus::Code::kBusy) {
+        Info(logger_, "Migration ignored, zone too busy...");
+        break;
+      }
+      Info(logger_, "MigrateExtent to [ext_start: %lu, ext_length: %d, zone_start: %lu], fname = %s", 
                                       ext->start_, ext->length_, ext->zone_->start_, fname.data());
-      /*
+
+      // Double check if the file still exist
+      std::lock_guard<std::mutex> lk(files_mtx_);
+      if(GetFileInternal(fname) == nullptr) {
+        break;
+      }
+
       // Add a file deletion record
       std::string record;
       EncodeFileDeletionTo(zfile, &record);
       s = PersistRecord(record);
       assert(s.ok());
 
-      // Add a file creation record again
+      // Re-insert a file creation record
+      std::string output;
       zfile->MetadataUnsynced();
-      s = SyncFileMetadata(zfile);
+      PutFixed32(&output, kFileUpdate);
+      zfile->EncodeUpdateTo(&record);
+      PutLengthPrefixedSlice(&output, Slice(record));
+      s = PersistRecord(output);
       assert(s.ok());
+      if (s.ok()) { zfile->MetadataSynced(); }
 
-      // Reduce the original zone's used_capacity, new zone's used_capacity will be 
-      // updated inside the ZoneFile::MigrateExtent.
-      // prev_zone->used_capacity_ -= ext->length_;
-      // We only need to migarte one extent each time.
+      // Update zone stats
+      old_zone->used_capacity_ -= ext->length_;
+      ext->zone_->used_capacity_ += ext->length_;
+
       break;
-      */
     }
   }
 }

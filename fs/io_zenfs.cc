@@ -319,6 +319,11 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
      * so fall back on non-direct-io in that case.
      */
     bool aligned = (pread_sz % zbd_->GetBlockSize() == 0);
+    /*
+    std::cout << "pread, fname: " << filename_ << ", extent.start:" 
+              << extent->start_ << ", lba offset:" << r_off << ", sz" << pread_sz 
+              << " fileoffset: " << offset << ", total_sz:" << n <<std::endl;
+    */
     if (direct && aligned) {
       r = pread(f_direct, ptr, pread_sz, r_off);
     } else {
@@ -738,38 +743,52 @@ size_t ZoneFile::GetUniqueId(char* id, size_t max_size) {
 IOStatus ZoneFile::MigrateExtent(ZoneExtent* ext) {
   IOStatus s;
   Zone* zone = nullptr;
+
   zbd_->AllocateMigrateZone(&zone, ext->length_);
 
   if(zone == nullptr) {
     zbd_->FinishMigration(zone);
-    std::cout << "zone empty ............. " << filename_ << std::endl;
     return IOStatus::Busy("We don't have a good fit for current extent, ignore");
   }
 
-  // SetActiveZone(zone);
-  /*
   uint64_t new_start = zone->wp_;
 
   // Copy data to new zone.
-  int step = 128<<10; // 128KB
+  uint32_t step = 128 << 10;
+  uint32_t read_sz = step;
   uint64_t left = ext->length_;
-  char buf[step];
-  Slice result;
   uint64_t off = ext->start_;
+  int block_sz = zbd_->GetBlockSize();
+  int pad_sz = 0;
+
+  char* buf;
+  int ret = posix_memalign((void**)&buf, block_sz, step);
+  if (ret) {
+    return IOStatus::IOError("failed allocating alignment write buffer\n");
+  }
   
+  // std::cout<< "total left :" << left << std::endl;
   while(left > 0) {
-    step = left > step ? step : left;
-    PositionedRead(off, step, &result, buf, true);
-    // write to new zone, all extent data are aligned.
-    zone->Append((char*) buf, step);
-    left -= step;
-    zone->used_capacity_ += step;
+    // std::cout << "left:" << left << " step:"  << step << std::endl;
+     read_sz = left > read_sz ? read_sz : left;
+    if (read_sz % block_sz != 0) {
+      pad_sz = block_sz - (read_sz % block_sz);
+    }
+
+    memset(buf, 0, step);
+    int r = zbd_->PositionedRead(off, read_sz + pad_sz, buf);
+    assert(s.ok());
+    // write to new zone, extent data is already aligned.
+    zone->Append(buf, r);
+    // std::cout << filename_ << " read_sz:" << read_sz << " return/append size:" << r  << ", padsz = " << pad_sz<< std::endl;
+    left -= read_sz;
+    off += r;
   }
 
   ext->zone_ = zone;
   ext->start_ = new_start;
-  */
-  // CloseActiveZone();
+
+  free(buf);
   zbd_->FinishMigration(zone);
   return IOStatus::OK();
 }

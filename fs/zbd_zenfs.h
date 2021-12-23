@@ -160,6 +160,8 @@ class ZonedBlockDevice {
 
   void GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot);
 
+  int PositionedRead(uint64_t offset, uint32_t n, char* buf);
+
   IOStatus FinishMigration(Zone* zone);
 
   IOStatus AllocateMigrateZone(Zone **out_zone, uint32_t min_capacity);
