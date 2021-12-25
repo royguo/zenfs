@@ -19,6 +19,7 @@
 #include <sys/stat.h>
 #include <unistd.h>
 
+#include <iostream>
 #include <string>
 #include <utility>
 #include <vector>
@@ -897,6 +898,50 @@ size_t ZoneFile::GetUniqueId(char* id, size_t max_size) {
   return static_cast<size_t>(rid - id);
 
   return 0;
+}
+
+IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
+                               Zone* target_zone) {
+  uint32_t step = 128 << 10;
+  uint32_t read_sz = step;
+  int block_sz = zbd_->GetBlockSize();
+
+  assert(offset % block_sz != 0);
+  if(offset % block_sz != 0) {
+    return IOStatus::IOError("MigrateData offset is not aligned!\n");
+  }
+
+
+  char* buf;
+  int ret = posix_memalign((void**)&buf, block_sz, step);
+  if (ret) {
+    return IOStatus::IOError("failed allocating alignment write buffer\n");
+  }
+
+  uint32_t write_sz = length;
+
+  int pad_sz = 0;
+  while (length > 0) {
+    read_sz = length > read_sz ? read_sz : length;
+    if (read_sz % block_sz != 0) {
+      pad_sz = block_sz - (read_sz % block_sz);
+    }
+
+    memset(buf, 0, step);
+    int r = zbd_->DirectRead(buf, offset, read_sz + pad_sz);
+    assert(r >= 0);
+    if (r < 0) {
+      return IOStatus::IOError("Migrate Data Error!");
+    }
+    target_zone->Append(buf, r);
+    length -= read_sz;
+    offset += r;
+  }
+
+
+  free(buf);
+
+  return IOStatus::OK();
 }
 
 size_t ZonedRandomAccessFile::GetUniqueId(char* id, size_t max_size) const {

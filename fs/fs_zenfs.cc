@@ -1274,7 +1274,124 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
     zbd_->GetMetrics()->ReportSnapshot(snapshot);
   }
 
-  zbd_->LogGarbageInfo();
+  if (options.log_garbage_) {
+    zbd_->LogGarbageInfo();
+  }
+}
+
+void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool direct_io) {
+  // Group extents by their filename
+  std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
+  for (auto* ext : extents) {
+    std::string fname = ext->filename;
+    // We only migrate SST file extents
+    if(ends_with(fname, ".sst")) {
+      file_extents[fname].emplace_back(ext);
+    }
+  }
+
+  for (const auto& it : file_extents) {
+    MigrateFileExtents(it.first, it.second, direct_io);
+  }
+}
+
+void ZenFS::MigrateFileExtents(
+    const std::string& fname,
+    const std::vector<ZoneExtentSnapshot*>& migrate_exts,
+    bool direct_io) {
+  IOStatus s;
+  Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
+       fname.data(), migrate_exts.size());
+  // The file may be deleted by other threads, better double check.
+  auto zfile = GetFile(fname);
+  if (zfile == nullptr || zfile->IsOpenForWR()) {
+    return;
+  }
+
+  std::vector<ZoneExtent*> extents = zfile->GetExtents();
+  for (ZoneExtent* ext : extents) {
+    // Check if current extent need to be migrated
+    auto it = std::find_if(migrate_exts.begin(), migrate_exts.end(),
+                           [&](const ZoneExtentSnapshot* ext_snapshot) {
+                             return ext_snapshot->start == ext->start_ &&
+                                    ext_snapshot->length == ext->length_;
+                           });
+
+    if (it == migrate_exts.end()) {
+      Info(logger_, "Migrate extent not found, ext_start: %lu", ext->start_);
+      continue;
+    }
+
+    Zone* old_zone = ext->zone_;
+    Zone* target_zone = nullptr;
+
+    // Allocate a new migration zone.
+    zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
+                          ext->length_);
+    if (target_zone == nullptr) {
+      zbd_->ReleaseMigrateZone(target_zone);
+      Info(logger_, "Migrate Zone Acquire Failed, Ignore Task.");
+      continue;
+    }
+
+    uint64_t target_start = target_zone->wp_;
+    if(!direct_io) {
+      // For buffered write, ZenFS use inlined metadata for extents and each
+      // extent has a SPARSE_HEADER_SIZE.
+      target_start = target_zone->wp_ + ZoneFile::SPARSE_HEADER_SIZE;
+      zfile->MigrateData(ext->start_ - ZoneFile::SPARSE_HEADER_SIZE,
+                         ext->length_ + ZoneFile::SPARSE_HEADER_SIZE,
+                         target_zone);
+    } else {
+      zfile->MigrateData(ext->start_, ext->length_, target_zone);
+    }
+
+    // Check again if the file still exist
+    if (GetFileInternal(fname) == nullptr) {
+      Info(logger_, "Migrate file not exist anymore.");
+      zbd_->ReleaseMigrateZone(target_zone);
+      break;
+    }
+
+#ifndef NDEBUG
+    // Double check migrated data
+    if (!zbd_->IsDataIdentical(ext->start_, target_start, ext->length_)) {
+      Info(logger_,
+           "Double Check Migration Data Failed, fname = %s, From %lu To %lu",
+           fname.data(), ext->start_, target_start);
+    } else {
+      Info(logger_,
+           "Double Check Migration Data Success, fname = %s, From %lu To %lu",
+           fname.data(), ext->start_, target_start);
+    }
+#endif
+
+    // Update zone stats
+    files_mtx_.lock();
+    ext->start_ = target_start;
+    ext->zone_ = target_zone;
+    ext->zone_->used_capacity_ += ext->length_;
+    old_zone->used_capacity_ -= ext->length_;
+    files_mtx_.unlock();
+
+    zbd_->ReleaseMigrateZone(target_zone);
+  }
+
+  // Add a file deletion record
+  std::string record;
+  EncodeFileDeletionTo(zfile, &record);
+  s = PersistRecord(record);
+  if (!s.ok()) {
+    Info(logger_, "Migration: Delete old file failed!");
+    return;
+  }
+
+  // Re-insert a file creation record
+  zfile->MetadataUnsynced();
+  SyncFileMetadata(zfile);
+
+  Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
+       fname.data(), migrate_exts.size());
 }
 
 extern "C" FactoryFunc<FileSystem> zenfs_filesystem_reg;

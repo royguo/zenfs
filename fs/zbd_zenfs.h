@@ -99,6 +99,10 @@ class ZonedBlockDevice {
   std::mutex zone_deferred_status_mutex_;
   IOStatus zone_deferred_status_;
 
+  std::condition_variable migrate_resource_;
+  std::mutex migrate_zone_mtx_;
+  std::atomic<bool> migrating_{false};
+
   unsigned int max_nr_active_io_zones_;
   unsigned int max_nr_open_io_zones_;
 
@@ -156,6 +160,16 @@ class ZonedBlockDevice {
 
   void GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot);
 
+  int DirectRead(char *buf, uint64_t offset, uint32_t n);
+
+  IOStatus ReleaseMigrateZone(Zone *zone);
+
+  IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
+                           uint32_t min_capacity);
+
+  // For debug, Check if the data betwee [lba1, length] and [lba2, lenght] is identical.
+  bool IsDataIdentical(uint64_t lba1, uint64_t lba2, uint32_t length);
+
  private:
   std::string ErrorToString(int err);
   IOStatus GetZoneDeferredStatus();
@@ -164,7 +178,8 @@ class ZonedBlockDevice {
   IOStatus ApplyFinishThreshold();
   IOStatus FinishCheapestIOZone();
   IOStatus GetBestOpenZoneMatch(Env::WriteLifeTimeHint file_lifetime,
-                                unsigned int *best_diff_out, Zone **zone_out);
+                                unsigned int *best_diff_out, Zone **zone_out,
+                                uint32_t min_capacity = 0);
   IOStatus AllocateEmptyZone(Zone **zone_out);
 };
 
