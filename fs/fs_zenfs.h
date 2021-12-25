@@ -1,4 +1,3 @@
-// Copyright (c) Facebook, Inc. and its affiliates. All Rights Reserved.
 // Copyright (c) 2019-present, Western Digital Corporation
 //  This source code is licensed under both the GPLv2 (found in the
 //  COPYING file in the root directory) and Apache 2.0 License
@@ -371,10 +370,11 @@ class ZenFS : public FileSystemWrapper {
     return IOStatus::NotSupported("AreFilesSame is not supported in ZenFS");
   }
 
-  void GetZoneSnapshot(std::vector<ZoneSnapshot>& zones);
-  void GetZoneFileSnapshot(std::vector<ZoneFileSnapshot>& zone_files);
   void GetZenFSSnapshot(ZenFSSnapshot& snapshot,
                         const ZenFSSnapshotOptions& options);
+
+  void MigrateExtent(uint64_t zone_start, uint64_t ext_start,
+                     uint32_t ext_length, const std::string& fname);
 };
 #endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 

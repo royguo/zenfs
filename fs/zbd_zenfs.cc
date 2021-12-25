@@ -148,7 +148,9 @@ IOStatus Zone::Append(char *data, uint32_t size) {
 
   while (left) {
     ret = pwrite(fd, ptr, size, wp_);
-    if (ret < 0) return IOStatus::IOError("Write failed");
+    if (ret < 0) {
+      return IOStatus::IOError(strerror(errno));
+    }
 
     ptr += ret;
     wp_ += ret;
@@ -220,6 +222,9 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   Status s;
   uint64_t i = 0;
   uint64_t m = 0;
+  // Reserve one zone for metazone allocation, may add more for other
+  // tasks in the future.
+  int reserved_zones = 2;
   int ret;
 
   if (!readonly && !exclusive)
@@ -271,17 +276,15 @@ IOStatus ZonedBlockDevice::Open(bool readonly, bool exclusive) {
   zone_sz_ = info.zone_size;
   nr_zones_ = info.nr_zones;
 
-  /* We need one open zone for meta data writes, the rest can be used for files
-   */
   if (info.max_nr_active_zones == 0)
     max_nr_active_io_zones_ = info.nr_zones;
   else
-    max_nr_active_io_zones_ = info.max_nr_active_zones - 1;
+    max_nr_active_io_zones_ = info.max_nr_active_zones - reserved_zones;
 
   if (info.max_nr_open_zones == 0)
     max_nr_open_io_zones_ = info.nr_zones;
   else
-    max_nr_open_io_zones_ = info.max_nr_open_zones - 1;
+    max_nr_open_io_zones_ = info.max_nr_open_zones - reserved_zones;
 
   Info(logger_, "Zone block device nr zones: %u max active: %u max open: %u \n",
        info.nr_zones, info.max_nr_active_zones, info.max_nr_open_zones);
@@ -418,16 +421,20 @@ void ZonedBlockDevice::LogGarbageInfo() {
   // the result to be precise.
   int zone_gc_stat[12] = {0};
   for (auto z : io_zones) {
-    // Calculate garbage percent
     if (z->IsEmpty()) {
       zone_gc_stat[0]++;
       continue;
     }
+
+    if(!z->Acquire()) { continue; }
+
     double garbage_rate =
         double(z->wp_ - z->start_ - z->used_capacity_) / z->max_capacity_;
     // Find appropriate vector index that represet current garbage percent.
     int idx = int((garbage_rate + 0.1) * 10);
     zone_gc_stat[idx]++;
+
+    z->Release();
   }
 
   std::stringstream ss;
@@ -632,8 +639,9 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone() {
     }
   }
 
+  // If all non-busy zones are empty or full, we should return success.
   if (finish_victim == nullptr) {
-    return IOStatus::IOError("Failed to find a zone to finish");
+    return IOStatus::OK();
   }
 
   s = finish_victim->Finish();
@@ -704,6 +712,57 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
     }
   }
   *zone_out = allocated_zone;
+  return IOStatus::OK();
+}
+
+int ZonedBlockDevice::DirectRead(char *buf, uint64_t offset, uint32_t n) {
+  int ret = 0;
+  int f = GetReadDirectFD();
+
+  while (ret < n) {
+    int r = pread(f, buf, n, offset);
+    if (r == -1) {
+      return -1;
+    }
+    if (r == 0) {
+      break;
+    }
+    ret += r;
+  }
+
+  return ret;
+}
+
+IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
+  {
+    std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
+    migrating_ = false;
+    if (zone != nullptr) {
+      zone->CheckRelease();
+      Info(logger_, "Release migrate zone, zone start: : %lu", zone->start_);
+    }
+  }
+  migrate_resource_.notify_one();
+  return IOStatus::OK();
+}
+
+IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
+                                           uint32_t min_capacity) {
+  std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
+  migrate_resource_.wait(lock_, [this] { return !migrating_; });
+
+  migrating_ = true;
+  for (auto *z : io_zones) {
+    if (z->Acquire()) {
+      if (z->IsEmpty() || z->capacity_ < min_capacity) {
+        z->CheckRelease();
+        continue;
+      }
+      *out_zone = z;
+      break;
+    }
+  }
+
   return IOStatus::OK();
 }
 
@@ -859,9 +918,52 @@ void ZonedBlockDevice::SetZoneDeferredStatus(IOStatus status) {
   }
 }
 
-void ZonedBlockDevice::GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot,
-                                       const ZenFSSnapshotOptions &options) {
-  for (auto &zone : io_zones) snapshot.emplace_back(*zone, options);
+void ZonedBlockDevice::GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot) {
+  for (auto *zone : io_zones) {
+    snapshot.emplace_back(*zone);
+  }
+}
+
+bool ZonedBlockDevice::IsDataIdentical(uint64_t lba1, uint64_t lba2,
+                                       uint32_t length) {
+  int block_sz = GetBlockSize();
+  int step = 128 << 10;
+  int pad_sz = 0;
+  int read_sz = step;
+  int left = length;
+
+  char *buf1;
+  char *buf2;
+
+  posix_memalign((void **)&buf1, block_sz, step);
+  posix_memalign((void **)&buf2, block_sz, step);
+
+  while (left > 0) {
+    read_sz = read_sz > left ? left : read_sz;
+    pad_sz = block_sz - (read_sz % block_sz);
+
+    memset(buf1, 0, step);
+    memset(buf2, 0, step);
+
+    int r1 = DirectRead(buf1, lba1 + (length - left), read_sz + pad_sz);
+    int r2 = DirectRead(buf2, lba2 + (length - left), read_sz + pad_sz);
+
+    if (r1 != r2) {
+      Info(logger_, "IsDataIdentical: returned size not equal!");
+      return false;
+    }
+
+    if (memcmp(buf1, buf2, read_sz) != 0) {
+      Info(logger_, "IsDataIdentical: data not equal!");
+      return false;
+    }
+
+    left -= read_sz;
+  }
+
+  free(buf1);
+  free(buf2);
+  return true;
 }
 
 }  // namespace ROCKSDB_NAMESPACE
