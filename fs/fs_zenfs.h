@@ -12,6 +12,7 @@
 #include "rocksdb/env.h"
 #include "rocksdb/file_system.h"
 #include "rocksdb/status.h"
+#include "snapshot.h"
 #include "version.h"
 #include "zbd_zenfs.h"
 
@@ -373,8 +374,10 @@ class ZenFS : public FileSystemWrapper {
   void GetZenFSSnapshot(ZenFSSnapshot& snapshot,
                         const ZenFSSnapshotOptions& options);
 
-  void MigrateExtent(uint64_t zone_start, uint64_t ext_start,
-                     uint32_t ext_length, const std::string& fname);
+  void MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents);
+
+  void MigrateFileExtents(const std::string& fname,
+                          const std::vector<ZoneExtentSnapshot*>& migrate_exts);
 };
 #endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 
