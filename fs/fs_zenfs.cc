@@ -1275,13 +1275,25 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   zbd_->LogGarbageInfo();
 }
 
-void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start,
-                          uint32_t ext_length, const std::string& fname) {
+void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents) {
+  // Group extents by their filename
+  std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
+  for (auto* ext : extents) {
+    std::string fname = ext->filename;
+    file_extents[fname].emplace_back(ext);
+  }
+
+  for (const auto& it : file_extents) {
+    MigrateFileExtents(it.first, it.second);
+  }
+}
+
+void ZenFS::MigrateFileExtents(
+    const std::string& fname,
+    const std::vector<ZoneExtentSnapshot*>& migrate_exts) {
   IOStatus s;
-  Info(logger_,
-       "MigrateExtent From [ext_start: %lu, ext_length: %d, zone_start: %lu], "
-       "fname = %s",
-       ext_start, ext_length, zone_start, fname.data());
+  Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
+       fname.data(), migrate_exts.size());
   // The file may be deleted by other threads, better double check.
   auto zfile = GetFile(fname);
   if (zfile == nullptr || zfile->IsOpenForWR()) {
@@ -1290,70 +1302,78 @@ void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start,
 
   std::vector<ZoneExtent*> extents = zfile->GetExtents();
   for (ZoneExtent* ext : extents) {
-    if (ext->start_ == ext_start && ext->length_ == ext_length) {
-      Zone* old_zone = ext->zone_;
-      Zone* target_zone = nullptr;
+    // Check if current extent need to be migrated
+    auto it = std::find_if(migrate_exts.begin(), migrate_exts.end(),
+                           [&](const ZoneExtentSnapshot* ext_snapshot) {
+                             return ext_snapshot->start == ext->start_ &&
+                                    ext_snapshot->length == ext->length_;
+                           });
 
-      // Allocate a new migration zone.
-      zbd_->TakeMigrateZone(&target_zone, ext->length_);
-      if (target_zone == nullptr) {
-        zbd_->ReleaseMigrateZone(target_zone);
-        Info(logger_, "Migrate Zone Acquire Failed, Ignore Task.");
-        return;
-      }
+    if (it == migrate_exts.end()) {
+      Info(logger_, "Migrate extent not found, ext_start: %lu", ext->start_);
+      continue;
+    }
 
-      uint64_t target_start = target_zone->wp_;
+    Zone* old_zone = ext->zone_;
+    Zone* target_zone = nullptr;
 
-      zfile->MigrateData(ext->start_, ext->length_, target_zone);
-      Info(logger_,
-           "MigrateExtent to [ext_start: %lu, ext_length: %d, zone_start: "
-           "%lu], fname = %s",
-           target_start, ext->length_, target_zone->start_, fname.data());
+    // Allocate a new migration zone.
+    zbd_->TakeMigrateZone(&target_zone, ext->length_);
+    if (target_zone == nullptr) {
+      zbd_->ReleaseMigrateZone(target_zone);
+      Info(logger_, "Migrate Zone Acquire Failed, Ignore Task.");
+      continue;
+    }
 
-      // Check again if the file still exist
-      if (GetFileInternal(fname) == nullptr) {
-        zbd_->ReleaseMigrateZone(target_zone);
-        break;
-      }
+    uint64_t target_start = target_zone->wp_;
 
-#ifndef NDEBUG
-      // Double check migrated data
-      if (!zbd_->IsDataIdentical(ext->start_, target_start, ext->length_)) {
-        Info(logger_,
-             "Double Check Migration Data Failed, fname = %s, From %lu To %lu",
-             fname.data(), ext->start_, target_start);
-      } else {
-        Info(logger_,
-             "Double Check Migration Data Success, fname = %s, From %lu To %lu",
-             fname.data(), ext->start_, target_start);
-      }
-#endif
+    zfile->MigrateData(ext->start_, ext->length_, target_zone);
 
-      // Update zone stats
-      files_mtx_.lock();
-      ext->start_ = target_start;
-      ext->zone_ = target_zone;
-      ext->zone_->used_capacity_ += ext->length_;
-      old_zone->used_capacity_ -= ext->length_;
-      files_mtx_.unlock();
-
-      // Add a file deletion record
-      std::string record;
-      EncodeFileDeletionTo(zfile, &record);
-      s = PersistRecord(record);
-      if (!s.ok()) {
-        Info(logger_, "Migration: Delete old file failed!");
-        return;
-      }
-
-      // Re-insert a file creation record
-      zfile->MetadataUnsynced();
-      SyncFileMetadata(zfile);
-
+    // Check again if the file still exist
+    if (GetFileInternal(fname) == nullptr) {
       zbd_->ReleaseMigrateZone(target_zone);
       break;
     }
+
+#ifndef NDEBUG
+    // Double check migrated data
+    if (!zbd_->IsDataIdentical(ext->start_, target_start, ext->length_)) {
+      Info(logger_,
+           "Double Check Migration Data Failed, fname = %s, From %lu To %lu",
+           fname.data(), ext->start_, target_start);
+    } else {
+      Info(logger_,
+           "Double Check Migration Data Success, fname = %s, From %lu To %lu",
+           fname.data(), ext->start_, target_start);
+    }
+#endif
+
+    // Update zone stats
+    files_mtx_.lock();
+    ext->start_ = target_start;
+    ext->zone_ = target_zone;
+    ext->zone_->used_capacity_ += ext->length_;
+    old_zone->used_capacity_ -= ext->length_;
+    files_mtx_.unlock();
+
+    zbd_->ReleaseMigrateZone(target_zone);
   }
+
+  // Add a file deletion record
+  std::string record;
+  EncodeFileDeletionTo(zfile, &record);
+  s = PersistRecord(record);
+  if (!s.ok()) {
+    Info(logger_, "Migration: Delete old file failed!");
+    return;
+  }
+
+  // Re-insert a file creation record
+  zfile->MetadataUnsynced();
+  SyncFileMetadata(zfile);
+
+  Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
+       fname.data(), migrate_exts.size());
 }
 
 extern "C" FactoryFunc<FileSystem> zenfs_filesystem_reg;
