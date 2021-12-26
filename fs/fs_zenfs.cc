@@ -1258,7 +1258,6 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
 
 void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start,
                           uint32_t ext_length, const std::string& fname) {
-  return;
   IOStatus s;
   Info(logger_,
        "MigrateExtent From [ext_start: %lu, ext_length: %d, zone_start: %lu], "
@@ -1278,13 +1277,13 @@ void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start,
 
       // Allocate a new migration zone.
       zbd_->TakeMigrateZone(&target_zone, ext->length_);
-      uint64_t target_start = target_zone->wp_;
-
       if (target_zone == nullptr) {
         zbd_->ReleaseMigrateZone(target_zone);
         Info(logger_, "Migrate Zone Acquire Failed, Ignore Task.");
         return;
       }
+
+      uint64_t target_start = target_zone->wp_;
 
       zfile->MigrateData(ext->start_, ext->length_, target_zone);
       Info(logger_,
@@ -1320,16 +1319,15 @@ void ZenFS::MigrateExtent(uint64_t zone_start, uint64_t ext_start,
       files_mtx_.unlock();
 
       // Add a file deletion record
-      s = DeleteFile(fname);
+      std::string record;
+      EncodeFileDeletionTo(zfile, &record);
+      s = PersistRecord(record);
       if (!s.ok()) {
         Info(logger_, "Migration: Delete old file failed!");
+        return;
       }
 
       // Re-insert a file creation record
-      files_mtx_.lock();
-      files_.insert(std::make_pair(fname, zfile));
-      files_mtx_.unlock();
-
       zfile->MetadataUnsynced();
       SyncFileMetadata(zfile);
 
