@@ -426,11 +426,13 @@ void ZonedBlockDevice::LogGarbageInfo() {
       continue;
     }
 
-    if(!z->Acquire()) { continue; }
+    if (!z->Acquire()) {
+      continue;
+    }
 
     double garbage_rate =
         double(z->wp_ - z->start_ - z->used_capacity_) / z->max_capacity_;
-    // Find appropriate vector index that represet current garbage percent.
+    assert(garbage_rate > 0);
     int idx = int((garbage_rate + 0.1) * 10);
     zone_gc_stat[idx]++;
 
@@ -739,7 +741,7 @@ IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
     migrating_ = false;
     if (zone != nullptr) {
       zone->CheckRelease();
-      Info(logger_, "Release migrate zone, zone start: : %lu", zone->start_);
+      Info(logger_, "ReleaseMigrateZone: %lu", zone->start_);
     }
   }
   migrate_resource_.notify_one();
@@ -758,6 +760,7 @@ IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
         z->CheckRelease();
         continue;
       }
+      Info(logger_, "TakeMigrateZone: %lu", z->start_);
       *out_zone = z;
       break;
     }

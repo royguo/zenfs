@@ -906,6 +906,8 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
   uint32_t read_sz = step;
   int block_sz = zbd_->GetBlockSize();
 
+  assert(offset % block_sz != 0);
+
   char* buf;
   int ret = posix_memalign((void**)&buf, block_sz, step);
   if (ret) {
@@ -924,6 +926,10 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
 
     memset(buf, 0, step);
     int r = zbd_->DirectRead(buf, offset, read_sz + pad_sz);
+    assert(r >= 0);
+    if (r < 0) {
+      return IOStatus::IOError("Migrate Data Error!");
+    }
     target_zone->Append(buf, r);
     length -= read_sz;
     offset += r;
