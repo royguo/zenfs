@@ -1253,7 +1253,9 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
     zbd_->GetMetrics()->ReportSnapshot(snapshot);
   }
 
-  zbd_->LogGarbageInfo();
+  if (options.log_garbage_) {
+    zbd_->LogGarbageInfo();
+  }
 }
 
 void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents) {
@@ -1306,12 +1308,18 @@ void ZenFS::MigrateFileExtents(
       continue;
     }
 
+    /*
+    uint64_t target_start = target_zone->wp_ + ZoneFile::SPARSE_HEADER_SIZE;
+    zfile->MigrateData(ext->start_ - ZoneFile::SPARSE_HEADER_SIZE,
+                       ext->length_ + ZoneFile::SPARSE_HEADER_SIZE,
+                       target_zone);
+    */
     uint64_t target_start = target_zone->wp_;
-
     zfile->MigrateData(ext->start_, ext->length_, target_zone);
 
     // Check again if the file still exist
     if (GetFileInternal(fname) == nullptr) {
+      Info(logger_, "Migrate file not exist anymore.");
       zbd_->ReleaseMigrateZone(target_zone);
       break;
     }
