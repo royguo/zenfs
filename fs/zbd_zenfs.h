@@ -164,7 +164,8 @@ class ZonedBlockDevice {
 
   IOStatus ReleaseMigrateZone(Zone *zone);
 
-  IOStatus TakeMigrateZone(Zone **out_zone, uint32_t min_capacity);
+  IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
+                           uint32_t min_capacity);
 
   // Check if the data betwee [lba1, length] and [lba2, lenght] is identical.
   bool IsDataIdentical(uint64_t lba1, uint64_t lba2, uint32_t length);
@@ -177,7 +178,8 @@ class ZonedBlockDevice {
   IOStatus ApplyFinishThreshold();
   IOStatus FinishCheapestIOZone();
   IOStatus GetBestOpenZoneMatch(Env::WriteLifeTimeHint file_lifetime,
-                                unsigned int *best_diff_out, Zone **zone_out);
+                                unsigned int *best_diff_out, Zone **zone_out,
+                                uint32_t min_capacity = 0);
   IOStatus AllocateEmptyZone(Zone **zone_out);
 };
 

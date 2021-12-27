@@ -757,6 +757,10 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
   int block_sz = zbd_->GetBlockSize();
 
   assert(offset % block_sz != 0);
+  if(offset % block_sz != 0) {
+    return IOStatus::IOError("MigrateData offset is not aligned!\n");
+  }
+
 
   char* buf;
   int ret = posix_memalign((void**)&buf, block_sz, step);
@@ -766,7 +770,9 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
 
   // uint64_t src_start = offset;
   // uint64_t target_start = target_zone->wp_;
+  uint32_t write_sz = length;
 
+  // std::cout << "before Append, capacity: " << target_zone->capacity_ << std::endl;
   int pad_sz = 0;
   while (length > 0) {
     read_sz = length > read_sz ? read_sz : length;
@@ -777,6 +783,7 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
     memset(buf, 0, step);
     int r = zbd_->DirectRead(buf, offset, read_sz + pad_sz);
     assert(r >= 0);
+    // std::cout << "\tAppend z = " << target_zone->start_ << " , r = " << r << " wp = " << target_zone->wp_ << std::endl;
     if (r < 0) {
       return IOStatus::IOError("Migrate Data Error!");
     }
@@ -784,6 +791,8 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
     length -= read_sz;
     offset += r;
   }
+
+  // std::cout << "\tAppend, z = " << target_zone->start_ << ", wp = " << target_zone->wp_ << " ,expect  write: " << write_sz << std::endl;
 
   free(buf);
 

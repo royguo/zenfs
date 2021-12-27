@@ -1301,7 +1301,8 @@ void ZenFS::MigrateFileExtents(
     Zone* target_zone = nullptr;
 
     // Allocate a new migration zone.
-    zbd_->TakeMigrateZone(&target_zone, ext->length_);
+    zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
+                          ext->length_);
     if (target_zone == nullptr) {
       zbd_->ReleaseMigrateZone(target_zone);
       Info(logger_, "Migrate Zone Acquire Failed, Ignore Task.");

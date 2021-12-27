@@ -430,6 +430,7 @@ void ZonedBlockDevice::LogGarbageInfo() {
       continue;
     }
 
+    // std::cout << "Log Garbage " << z->start_ << " "  <<  z->wp_ << " " << z->used_capacity_ << std::endl;
     double garbage_rate =
         double(z->wp_ - z->start_ - z->used_capacity_) / z->max_capacity_;
     assert(garbage_rate > 0);
@@ -662,14 +663,14 @@ IOStatus ZonedBlockDevice::FinishCheapestIOZone() {
 
 IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
     Env::WriteLifeTimeHint file_lifetime, unsigned int *best_diff_out,
-    Zone **zone_out) {
+    Zone **zone_out, uint32_t min_capacity) {
   unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
   Zone *allocated_zone = nullptr;
   IOStatus s;
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
-      if ((z->used_capacity_ > 0) && !z->IsFull()) {
+      if ((z->used_capacity_ > 0) && !z->IsFull() && z->capacity_ > min_capacity) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
           if (allocated_zone != nullptr) {
@@ -749,24 +750,21 @@ IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
 }
 
 IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
+                                           Env::WriteLifeTimeHint file_lifetime,
                                            uint32_t min_capacity) {
   std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
   migrate_resource_.wait(lock_, [this] { return !migrating_; });
 
   migrating_ = true;
-  for (auto *z : io_zones) {
-    if (z->Acquire()) {
-      if (z->IsEmpty() || z->capacity_ < min_capacity) {
-        z->CheckRelease();
-        continue;
-      }
-      Info(logger_, "TakeMigrateZone: %lu", z->start_);
-      *out_zone = z;
-      break;
-    }
+
+  unsigned int best_diff = LIFETIME_DIFF_NOT_GOOD;
+  auto s =
+      GetBestOpenZoneMatch(file_lifetime, &best_diff, out_zone, min_capacity);
+  if (s.ok() && (*out_zone) != nullptr) {
+    Info(logger_, "TakeMigrateZone: %lu", (*out_zone)->start_);
   }
 
-  return IOStatus::OK();
+  return s;
 }
 
 IOStatus ZonedBlockDevice::AllocateIOZone(Env::WriteLifeTimeHint file_lifetime,
