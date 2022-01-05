@@ -430,7 +430,6 @@ void ZonedBlockDevice::LogGarbageInfo() {
       continue;
     }
 
-    // std::cout << "Log Garbage " << z->start_ << " "  <<  z->wp_ << " " << z->used_capacity_ << std::endl;
     double garbage_rate =
         double(z->wp_ - z->start_ - z->used_capacity_) / z->max_capacity_;
     assert(garbage_rate > 0);

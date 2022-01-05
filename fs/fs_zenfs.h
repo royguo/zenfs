@@ -375,10 +375,11 @@ class ZenFS : public FileSystemWrapper {
   void GetZenFSSnapshot(ZenFSSnapshot& snapshot,
                         const ZenFSSnapshotOptions& options);
 
-  void MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents);
+  void MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool direct_io);
 
   void MigrateFileExtents(const std::string& fname,
-                          const std::vector<ZoneExtentSnapshot*>& migrate_exts);
+                          const std::vector<ZoneExtentSnapshot*>& migrate_exts,
+                          bool direct_io);
 };
 #endif  // !defined(ROCKSDB_LITE) && defined(OS_LINUX)
 

@@ -1277,22 +1277,26 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   }
 }
 
-void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents) {
+void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool direct_io) {
   // Group extents by their filename
   std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
   for (auto* ext : extents) {
     std::string fname = ext->filename;
-    file_extents[fname].emplace_back(ext);
+    // We only migrate SST file extents
+    if(ends_with(fname, ".sst")) {
+      file_extents[fname].emplace_back(ext);
+    }
   }
 
   for (const auto& it : file_extents) {
-    MigrateFileExtents(it.first, it.second);
+    MigrateFileExtents(it.first, it.second, direct_io);
   }
 }
 
 void ZenFS::MigrateFileExtents(
     const std::string& fname,
-    const std::vector<ZoneExtentSnapshot*>& migrate_exts) {
+    const std::vector<ZoneExtentSnapshot*>& migrate_exts,
+    bool direct_io) {
   IOStatus s;
   Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
@@ -1328,14 +1332,17 @@ void ZenFS::MigrateFileExtents(
       continue;
     }
 
-    /*
-    uint64_t target_start = target_zone->wp_ + ZoneFile::SPARSE_HEADER_SIZE;
-    zfile->MigrateData(ext->start_ - ZoneFile::SPARSE_HEADER_SIZE,
-                       ext->length_ + ZoneFile::SPARSE_HEADER_SIZE,
-                       target_zone);
-    */
     uint64_t target_start = target_zone->wp_;
-    zfile->MigrateData(ext->start_, ext->length_, target_zone);
+    if(!direct_io) {
+      // For buffered write, ZenFS use inlined metadata for extents and each
+      // extent has a SPARSE_HEADER_SIZE.
+      target_start = target_zone->wp_ + ZoneFile::SPARSE_HEADER_SIZE;
+      zfile->MigrateData(ext->start_ - ZoneFile::SPARSE_HEADER_SIZE,
+                         ext->length_ + ZoneFile::SPARSE_HEADER_SIZE,
+                         target_zone);
+    } else {
+      zfile->MigrateData(ext->start_, ext->length_, target_zone);
+    }
 
     // Check again if the file still exist
     if (GetFileInternal(fname) == nullptr) {
