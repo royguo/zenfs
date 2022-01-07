@@ -1279,33 +1279,36 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   }
 }
 
-void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool direct_io) {
+IOStatus ZenFS::MigrateExtents(
+    const std::vector<ZoneExtentSnapshot*>& extents) {
+  IOStatus s;
   // Group extents by their filename
   std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
   for (auto* ext : extents) {
     std::string fname = ext->filename;
     // We only migrate SST file extents
-    if(ends_with(fname, ".sst")) {
+    if (ends_with(fname, ".sst")) {
       file_extents[fname].emplace_back(ext);
     }
   }
 
   for (const auto& it : file_extents) {
-    MigrateFileExtents(it.first, it.second, direct_io);
+    s = MigrateFileExtents(it.first, it.second);
+    if (!s.ok()) break;
   }
+  return s;
 }
 
-void ZenFS::MigrateFileExtents(
+IOStatus ZenFS::MigrateFileExtents(
     const std::string& fname,
-    const std::vector<ZoneExtentSnapshot*>& migrate_exts,
-    bool direct_io) {
+    const std::vector<ZoneExtentSnapshot*>& migrate_exts) {
   IOStatus s;
   Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
   // The file may be deleted by other threads, better double check.
   auto zfile = GetFile(fname);
   if (zfile == nullptr || zfile->IsOpenForWR()) {
-    return;
+    return IOStatus::OK();
   }
 
   std::vector<ZoneExtent*> extents = zfile->GetExtents();
@@ -1335,7 +1338,7 @@ void ZenFS::MigrateFileExtents(
     }
 
     uint64_t target_start = target_zone->wp_;
-    if(!direct_io) {
+    if (zfile->IsSparse()) {
       // For buffered write, ZenFS use inlined metadata for extents and each
       // extent has a SPARSE_HEADER_SIZE.
       target_start = target_zone->wp_ + ZoneFile::SPARSE_HEADER_SIZE;
@@ -1383,7 +1386,7 @@ void ZenFS::MigrateFileExtents(
   s = PersistRecord(record);
   if (!s.ok()) {
     Info(logger_, "Migration: Delete old file failed!");
-    return;
+    return s;
   }
 
   // Re-insert a file creation record
@@ -1392,6 +1395,7 @@ void ZenFS::MigrateFileExtents(
 
   Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
+  return IOStatus::OK();
 }
 
 extern "C" FactoryFunc<FileSystem> zenfs_filesystem_reg;

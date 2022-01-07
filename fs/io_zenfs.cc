@@ -907,10 +907,9 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
   int block_sz = zbd_->GetBlockSize();
 
   assert(offset % block_sz != 0);
-  if(offset % block_sz != 0) {
+  if (offset % block_sz != 0) {
     return IOStatus::IOError("MigrateData offset is not aligned!\n");
   }
-
 
   char* buf;
   int ret = posix_memalign((void**)&buf, block_sz, step);
@@ -927,17 +926,14 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
       pad_sz = block_sz - (read_sz % block_sz);
     }
 
-    memset(buf, 0, step);
     int r = zbd_->DirectRead(buf, offset, read_sz + pad_sz);
-    assert(r >= 0);
     if (r < 0) {
-      return IOStatus::IOError("Migrate Data Error!");
+      return IOStatus::IOError(strerror(errno));
     }
     target_zone->Append(buf, r);
     length -= read_sz;
     offset += r;
   }
-
 
   free(buf);
 

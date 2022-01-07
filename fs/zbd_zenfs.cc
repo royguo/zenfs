@@ -669,7 +669,8 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
 
   for (const auto z : io_zones) {
     if (z->Acquire()) {
-      if ((z->used_capacity_ > 0) && !z->IsFull() && z->capacity_ > min_capacity) {
+      if ((z->used_capacity_ > 0) && !z->IsFull() &&
+          z->capacity_ > min_capacity) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
           if (allocated_zone != nullptr) {
@@ -719,19 +720,21 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
 
 int ZonedBlockDevice::DirectRead(char *buf, uint64_t offset, uint32_t n) {
   int ret = 0;
+  int r = -1;
   int f = GetReadDirectFD();
 
   while (ret < n) {
-    int r = pread(f, buf, n, offset);
-    if (r == -1) {
-      return -1;
-    }
-    if (r == 0) {
+    r = pread(f, buf, n, offset);
+    if (r <= 0) {
+      if (r == -1 && errno == EINTR) {
+        continue;
+      }
       break;
     }
     ret += r;
   }
 
+  if (r < 0) return r;
   return ret;
 }
 
