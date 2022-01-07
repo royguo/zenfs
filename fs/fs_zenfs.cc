@@ -1356,19 +1356,6 @@ IOStatus ZenFS::MigrateFileExtents(
       break;
     }
 
-#ifndef NDEBUG
-    // Double check migrated data
-    if (!zbd_->IsDataIdentical(ext->start_, target_start, ext->length_)) {
-      Info(logger_,
-           "Double Check Migration Data Failed, fname = %s, From %lu To %lu",
-           fname.data(), ext->start_, target_start);
-    } else {
-      Info(logger_,
-           "Double Check Migration Data Success, fname = %s, From %lu To %lu",
-           fname.data(), ext->start_, target_start);
-    }
-#endif
-
     // Update zone stats
     files_mtx_.lock();
     ext->start_ = target_start;
