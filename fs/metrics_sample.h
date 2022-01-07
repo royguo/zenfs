@@ -1,4 +1,9 @@
-//  SPDX-License-Identifier: Apache License 2.0 OR GPL-2.0
+//  This source code is licensed under both the GPLv2 (found in the
+//  COPYING file in the root directory) and Apache 2.0 License
+//  (found in the LICENSE.Apache file in the root directory).
+
+// This is a sample code for metrics framework, please refer to the `metrics.h`
+// for more details.
 
 #include <iostream>
 #include <unordered_map>

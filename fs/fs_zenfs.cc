@@ -329,9 +329,9 @@ IOStatus ZenFS::RollMetaZoneLocked() {
   Zone* new_meta_zone = nullptr;
   IOStatus s;
 
-  ZenFSMetricsLatencyGuard guard(zbd_->GetMetrics(), ZENFS_LABEL(ROLL, LATENCY),
+  ZenFSMetricsLatencyGuard guard(zbd_->GetMetrics(), ZENFS_ROLL_LATENCY,
                                  Env::Default());
-  zbd_->GetMetrics()->ReportQPS(ZENFS_LABEL(ROLL, QPS), 1);
+  zbd_->GetMetrics()->ReportQPS(ZENFS_ROLL_QPS, 1);
 
   IOStatus status = zbd_->AllocateMetaZone(&new_meta_zone);
   if (!status.ok()) return status;
@@ -411,8 +411,8 @@ IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
   std::string fileRecord;
   std::string output;
   IOStatus s;
-  ZenFSMetricsLatencyGuard guard(
-      zbd_->GetMetrics(), ZENFS_LABEL(META_SYNC, LATENCY), Env::Default());
+  ZenFSMetricsLatencyGuard guard(zbd_->GetMetrics(), ZENFS_META_SYNC_LATENCY,
+                                 Env::Default());
   std::lock_guard<std::mutex> lock(files_mtx_);
   zoneFile->SetFileModificationTime(time(0));
   PutFixed32(&output, kFileUpdate);
@@ -1279,13 +1279,14 @@ void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
   }
 }
 
-void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool direct_io) {
+void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents,
+                           bool direct_io) {
   // Group extents by their filename
   std::map<std::string, std::vector<ZoneExtentSnapshot*>> file_extents;
   for (auto* ext : extents) {
     std::string fname = ext->filename;
     // We only migrate SST file extents
-    if(ends_with(fname, ".sst")) {
+    if (ends_with(fname, ".sst")) {
       file_extents[fname].emplace_back(ext);
     }
   }
@@ -1297,8 +1298,7 @@ void ZenFS::MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool
 
 void ZenFS::MigrateFileExtents(
     const std::string& fname,
-    const std::vector<ZoneExtentSnapshot*>& migrate_exts,
-    bool direct_io) {
+    const std::vector<ZoneExtentSnapshot*>& migrate_exts, bool direct_io) {
   IOStatus s;
   Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
@@ -1335,7 +1335,7 @@ void ZenFS::MigrateFileExtents(
     }
 
     uint64_t target_start = target_zone->wp_;
-    if(!direct_io) {
+    if (!direct_io) {
       // For buffered write, ZenFS use inlined metadata for extents and each
       // extent has a SPARSE_HEADER_SIZE.
       target_start = target_zone->wp_ + ZoneFile::SPARSE_HEADER_SIZE;

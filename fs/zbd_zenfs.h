@@ -167,7 +167,8 @@ class ZonedBlockDevice {
   IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
                            uint32_t min_capacity);
 
-  // For debug, Check if the data betwee [lba1, length] and [lba2, lenght] is identical.
+  // For debug, Check if the data betwee [lba1, length] and [lba2, lenght] is
+  // identical.
   bool IsDataIdentical(uint64_t lba1, uint64_t lba2, uint32_t length);
 
  private:

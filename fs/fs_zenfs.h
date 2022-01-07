@@ -376,7 +376,8 @@ class ZenFS : public FileSystemWrapper {
   void GetZenFSSnapshot(ZenFSSnapshot& snapshot,
                         const ZenFSSnapshotOptions& options);
 
-  void MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents, bool direct_io);
+  void MigrateExtents(const std::vector<ZoneExtentSnapshot*>& extents,
+                      bool direct_io);
 
   void MigrateFileExtents(const std::string& fname,
                           const std::vector<ZoneExtentSnapshot*>& migrate_exts,

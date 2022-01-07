@@ -4,6 +4,29 @@
 //  COPYING file in the root directory) and Apache 2.0 License
 //  (found in the LICENSE.Apache file in the root directory).
 
+// Metrics Framework Introduction
+//
+// The metrics framework is used for users to identify ZenFS's performance
+// bottomneck, it can collect throuput, qps and latency of each critical
+// function call.
+//
+// For different RocksDB forks, users could custom their own metrics reporter to
+// define how they would like to report these collected information.
+//
+// Steps to add new metrics trace point:
+//   1. Add a new trace point label name in `ZenFSMetricsHistograms`.
+//   2. Find target function, add these lines for tracing
+//       // Latency Trace
+//       ZenFSMetricsGuard guard(zoneFile_->GetZBDMetrics(),
+//       ZENFS_WAL_WRITE_LATENCY, Env::Default());
+//       // Throughput Trace
+//       zoneFile_->GetZBDMetrics()->ReportThroughput(ZENFS_WRITE_THROUGHPUT,
+//       data.size());
+//       // QPS Trace
+//       zoneFile_->GetZBDMetrics()->ReportQPS(ZENFS_WRITE_QPS, 1);
+//    3. Implement a `ZenFSMetrics` to define how you would like to report your
+//    data (Refer to file  `metrics_sample.h`)
+
 #pragma once
 #include "rocksdb/env.h"
 namespace ROCKSDB_NAMESPACE {
@@ -134,6 +157,8 @@ enum ZenFSMetricsHistograms : uint32_t {
   ZENFS_RESETABLE_ZONES_COUNT,
 
   ZENFS_HISTOGRAM_ENUM_MAX,
+
+  ZENFS_ZONE_WRITE_THROUGHPUT,
 };
 
 // Types of Reporter that may be used for statistics.
@@ -148,6 +173,6 @@ enum ZenFSMetricsReporterType : uint32_t {
 #define ZENFS_LABEL(label, type) ZENFS_##label##_##type
 #define ZENFS_LABEL_DETAILED(label, sub_label, type) \
   ZENFS_##sub_label##_##label##_##type
-// eg : ZENFS_LABEL(WRITE, WAL, THROUGHPUT) => ZENFS_WRITE_WAL_THROUGHPUT
+// eg : ZENFS_LABEL(WRITE, WAL, THROUGHPUT) => ZENFS_WAL_WRITE_THROUGHPUT
 
 }  // namespace ROCKSDB_NAMESPACE
