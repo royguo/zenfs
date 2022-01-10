@@ -1411,6 +1411,12 @@ IOStatus ZenFS::MigrateFileExtents(
     zbd_->ReleaseMigrateZone(target_zone);
   }
 
+  // Check again if the file still exist
+  if (GetFileInternal(fname) == nullptr) {
+    Info(logger_, "Migrate file not exist anymore.");
+    return IOStatus::OK();
+  }
+
   // Replace extent list, locked
   zfile->ReplaceExtentList(new_extent_list);
 
