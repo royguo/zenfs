@@ -1302,7 +1302,7 @@ IOStatus ZenFS::MigrateExtents(
 IOStatus ZenFS::MigrateFileExtents(
     const std::string& fname,
     const std::vector<ZoneExtentSnapshot*>& migrate_exts) {
-  IOStatus s;
+  IOStatus s = IOStatus::OK();
   Info(logger_, "MigrateFileExtents, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
   // The file may be deleted by other threads, better double check.
@@ -1329,8 +1329,10 @@ IOStatus ZenFS::MigrateFileExtents(
     Zone* target_zone = nullptr;
 
     // Allocate a new migration zone.
-    zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
+    s = zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
                           ext->length_);
+    if(!s.ok()) { continue; }
+
     if (target_zone == nullptr) {
       zbd_->ReleaseMigrateZone(target_zone);
       Info(logger_, "Migrate Zone Acquire Failed, Ignore Task.");
@@ -1357,12 +1359,13 @@ IOStatus ZenFS::MigrateFileExtents(
     }
 
     // Update zone stats
-    files_mtx_.lock();
+    ext->WriteLock();
     ext->start_ = target_start;
     ext->zone_ = target_zone;
     ext->zone_->used_capacity_ += ext->length_;
+    ext->WriteUnlock();
+
     old_zone->used_capacity_ -= ext->length_;
-    files_mtx_.unlock();
 
     zbd_->ReleaseMigrateZone(target_zone);
   }

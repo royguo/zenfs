@@ -323,12 +323,14 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 
   r_off = 0;
   extent = GetExtent(offset, &r_off);
+  extent->ReadLock();
   if (!extent) {
     /* read start beyond end of (synced) file data*/
     *result = Slice(scratch, 0);
     return s;
   }
   extent_end = extent->start_ + extent->length_;
+  extent->ReadUnlock();
 
   /* Limit read size to end of file */
   if ((offset + n) > fileSize)
@@ -368,12 +370,14 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 
     if (read != r_sz && r_off == extent_end) {
       extent = GetExtent(offset + read, &r_off);
+      extent->ReadLock();
       if (!extent) {
         /* read beyond end of (synced) file data */
         break;
       }
       r_off = extent->start_;
       extent_end = extent->start_ + extent->length_;
+      extent->ReadUnlock();
     }
   }
 

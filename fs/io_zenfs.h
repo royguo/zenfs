@@ -28,6 +28,10 @@
 namespace ROCKSDB_NAMESPACE {
 
 class ZoneExtent {
+ private:
+  std::mutex writer_mtx_;
+  std::atomic<int> readers_;
+
  public:
   uint64_t start_;
   uint64_t length_;
@@ -37,6 +41,18 @@ class ZoneExtent {
   Status DecodeFrom(Slice* input);
   void EncodeTo(std::string* output);
   void EncodeJson(std::ostream& json_stream);
+
+  void ReadLock() {
+    writer_mtx_.lock();
+    readers_++;
+    writer_mtx_.unlock();
+  }
+  void ReadUnlock() { readers_--; }
+  void WriteLock() {
+    writer_mtx_.lock();
+    while(readers_ > 0) {}
+  }
+  void WriteUnlock() { writer_mtx_.unlock(); }
 };
 
 class ZoneFile;

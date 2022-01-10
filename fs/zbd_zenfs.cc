@@ -739,16 +739,17 @@ int ZonedBlockDevice::DirectRead(char *buf, uint64_t offset, uint32_t n) {
 }
 
 IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
+  IOStatus s = IOStatus::OK();
   {
     std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
     migrating_ = false;
     if (zone != nullptr) {
-      zone->CheckRelease();
+      s = zone->CheckRelease();
       Info(logger_, "ReleaseMigrateZone: %lu", zone->start_);
     }
   }
   migrate_resource_.notify_one();
-  return IOStatus::OK();
+  return s;
 }
 
 IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
@@ -764,6 +765,8 @@ IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
       GetBestOpenZoneMatch(file_lifetime, &best_diff, out_zone, min_capacity);
   if (s.ok() && (*out_zone) != nullptr) {
     Info(logger_, "TakeMigrateZone: %lu", (*out_zone)->start_);
+  } else {
+    migrating_ = false;
   }
 
   return s;
