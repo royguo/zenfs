@@ -148,6 +148,7 @@ class ZenFS : public FileSystemWrapper {
     kFileUpdate = 2,
     kFileDeletion = 3,
     kEndRecord = 4,
+    kFileReplace = 5,
   };
 
   void LogFiles();
@@ -167,7 +168,7 @@ class ZenFS : public FileSystemWrapper {
                             std::string* output);
 
   Status DecodeSnapshotFrom(Slice* input);
-  Status DecodeFileUpdateFrom(Slice* slice);
+  Status DecodeFileUpdateFrom(Slice* slice, bool replace = false);
   Status DecodeFileDeletionFrom(Slice* slice);
 
   Status RecoverFrom(ZenMetaLog* log);

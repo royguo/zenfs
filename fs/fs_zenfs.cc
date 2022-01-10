@@ -787,7 +787,7 @@ void ZenFS::EncodeJson(std::ostream& json_stream) {
   json_stream << "]";
 }
 
-Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
+Status ZenFS::DecodeFileUpdateFrom(Slice* slice, bool replace) {
   std::shared_ptr<ZoneFile> update(new ZoneFile(zbd_, "not_set", 0));
   uint64_t id;
   Status s;
@@ -798,13 +798,13 @@ Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
   id = update->GetID();
   if (id >= next_file_id_) next_file_id_ = id + 1;
 
-  /* Check if this is an update to an existing file */
+  /* Check if this is an update or an replace to an existing file */
   for (auto it = files_.begin(); it != files_.end(); it++) {
     std::shared_ptr<ZoneFile> zFile = it->second;
     if (id == zFile->GetID()) {
       std::string oldName = zFile->GetFilename();
 
-      s = zFile->MergeUpdate(update);
+      s = zFile->MergeUpdate(update, replace);
       update.reset();
 
       if (!s.ok()) return s;
@@ -918,6 +918,15 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
       case kFileUpdate:
         s = DecodeFileUpdateFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode file snapshot: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        break;
+
+      case kFileReplace:
+        s = DecodeFileUpdateFrom(&data, true);
         if (!s.ok()) {
           Warn(logger_, "Could not decode file snapshot: %s",
                s.ToString().c_str());

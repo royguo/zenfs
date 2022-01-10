@@ -115,9 +115,10 @@ class ZoneFile {
   void EncodeSnapshotTo(std::string* output) { EncodeTo(output, 0); };
   void EncodeJson(std::ostream& json_stream);
   void MetadataSynced() { nr_synced_extents_ = extents_.size(); };
+  void MetadataUnsynced() { nr_synced_extents_ = 0; };
 
   Status DecodeFrom(Slice* input);
-  Status MergeUpdate(std::shared_ptr<ZoneFile> update);
+  Status MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace);
 
   uint64_t GetID() { return file_id_; }
   size_t GetUniqueId(char* id, size_t max_size);
