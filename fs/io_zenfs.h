@@ -29,10 +29,6 @@
 namespace ROCKSDB_NAMESPACE {
 
 class ZoneExtent {
- private:
-  std::mutex writer_mtx_;
-  std::atomic<int> readers_{0};
-
  public:
   uint64_t start_;
   uint64_t length_;
@@ -42,19 +38,6 @@ class ZoneExtent {
   Status DecodeFrom(Slice* input);
   void EncodeTo(std::string* output);
   void EncodeJson(std::ostream& json_stream);
-
-  void ReadLock() {
-    writer_mtx_.lock();
-    readers_++;
-    writer_mtx_.unlock();
-  }
-  void ReadUnlock() { readers_--; }
-  void WriteLock() {
-    writer_mtx_.lock();
-    while (readers_ > 0) {
-    }
-  }
-  void WriteUnlock() { writer_mtx_.unlock(); }
 };
 
 class ZoneFile;
@@ -91,6 +74,9 @@ class ZoneFile {
 
   MetadataWriter* metadata_writer_ = NULL;
 
+  std::mutex writer_mtx_;
+  std::atomic<int> readers_{0};
+
  public:
   static const int SPARSE_HEADER_SIZE = 8;
 
@@ -114,6 +100,7 @@ class ZoneFile {
   void SetFileModificationTime(time_t mt);
   uint64_t GetFileSize();
   void SetFileSize(uint64_t sz);
+  void ClearExtents();
 
   uint32_t GetBlockSize() { return zbd_->GetBlockSize(); }
   ZonedBlockDevice* GetZbd() { return zbd_; }
@@ -151,6 +138,8 @@ class ZoneFile {
 
   IOStatus Recover();
 
+  void ReplaceExtentList(std::vector<ZoneExtent*> new_list);
+
  private:
   void ReleaseActiveZone();
   void SetActiveZone(Zone* zone);
@@ -160,6 +149,34 @@ class ZoneFile {
   std::shared_ptr<ZenFSMetrics> GetZBDMetrics() { return zbd_->GetMetrics(); }
   IOType GetIOType() const { return IOType::kUnknown; }
   IOStatus RecoverSparseExtents(uint64_t start, uint64_t end, Zone* zone);
+
+ public:
+  class ReadLock {
+   public:
+    ReadLock(ZoneFile* zfile) : zfile_(zfile) {
+      zfile_->writer_mtx_.lock();
+      zfile_->readers_++;
+      zfile_->writer_mtx_.unlock();
+    }
+    ~ReadLock() { zfile_->readers_--; }
+
+   private:
+    ZoneFile* zfile_;
+  };
+  class WriteLock {
+   public:
+    WriteLock(ZoneFile* zfile) : zfile_(zfile) {
+      zfile_->writer_mtx_.lock();
+      while (zfile_->readers_ > 0) {
+      }
+    }
+    ~WriteLock() {
+      zfile_->writer_mtx_.unlock();
+    }
+
+   private:
+    ZoneFile* zfile_;
+  };
 };
 
 class ZonedWritableFile : public FSWritableFile {

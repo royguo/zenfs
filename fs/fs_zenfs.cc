@@ -414,10 +414,10 @@ IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile, bool replace) {
   ZenFSMetricsLatencyGuard guard(
       zbd_->GetMetrics(), ZENFS_LABEL(META_SYNC, LATENCY), Env::Default());
   std::lock_guard<std::mutex> lock(files_mtx_);
-  zoneFile->SetFileModificationTime(time(0));
   if (replace) {
     PutFixed32(&output, kFileReplace);
   } else {
+    zoneFile->SetFileModificationTime(time(0));
     PutFixed32(&output, kFileUpdate);
   }
   zoneFile->EncodeUpdateTo(&fileRecord);
@@ -1354,6 +1354,7 @@ IOStatus ZenFS::MigrateFileExtents(
     return IOStatus::OK();
   }
 
+  std::vector<ZoneExtent*> new_extent_list;
   std::vector<ZoneExtent*> extents = zfile->GetExtents();
   for (ZoneExtent* ext : extents) {
     // Check if current extent need to be migrated
@@ -1403,21 +1404,25 @@ IOStatus ZenFS::MigrateFileExtents(
       break;
     }
 
-    // Update zone stats
-    ext->WriteLock();
-    ext->start_ = target_start;
-    ext->zone_ = target_zone;
-    ext->zone_->used_capacity_ += ext->length_;
-    ext->WriteUnlock();
-
-    old_zone->used_capacity_ -= ext->length_;
+    // Fill new extent list
+    new_extent_list.push_back(
+        new ZoneExtent(target_start, ext->length_, target_zone));
 
     zbd_->ReleaseMigrateZone(target_zone);
   }
 
+  // Replace extent list, locked
+  zfile->ReplaceExtentList(new_extent_list);
+
   // Add a file replace record
   zfile->MetadataUnsynced();
   SyncFileMetadata(zfile, true);
+
+  // Deallocate old zone list
+  for (auto* ext : extents) {
+    ext->zone_->used_capacity_ -= ext->length_;
+    delete ext;
+  }
 
   Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());

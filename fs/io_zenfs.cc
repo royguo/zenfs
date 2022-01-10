@@ -201,7 +201,7 @@ Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace) {
   SetFileModificationTime(update->GetFileModificationTime());
 
   if (replace) {
-    extents_.clear();
+    ClearExtents();
   }
 
   std::vector<ZoneExtent*> update_extents = update->GetExtents();
@@ -242,6 +242,14 @@ void ZoneFile::SetFileModificationTime(time_t mt) { m_time_ = mt; }
 void ZoneFile::SetIOType(IOType io_type) { io_type_ = io_type; }
 
 ZoneFile::~ZoneFile() {
+  ClearExtents();
+  IOStatus s = CloseWR();
+  if (!s.ok()) {
+    zbd_->SetZoneDeferredStatus(s);
+  }
+}
+
+void ZoneFile::ClearExtents() {
   for (auto e = std::begin(extents_); e != std::end(extents_); ++e) {
     Zone* zone = (*e)->zone_;
 
@@ -249,10 +257,7 @@ ZoneFile::~ZoneFile() {
     zone->used_capacity_ -= (*e)->length_;
     delete *e;
   }
-  IOStatus s = CloseWR();
-  if (!s.ok()) {
-    zbd_->SetZoneDeferredStatus(s);
-  }
+  extents_.clear();
 }
 
 IOStatus ZoneFile::CloseWR() {
@@ -309,6 +314,8 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
                                  Env::Default());
   zbd_->GetMetrics()->ReportQPS(ZENFS_LABEL(READ, QPS), 1);
 
+  ReadLock lck(this);
+
   int f = zbd_->GetReadFD();
   int f_direct = zbd_->GetReadDirectFD();
   char* ptr;
@@ -327,15 +334,12 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 
   r_off = 0;
   extent = GetExtent(offset, &r_off);
-  extent->ReadLock();
   if (!extent) {
     /* read start beyond end of (synced) file data*/
     *result = Slice(scratch, 0);
-    extent->ReadUnlock();
     return s;
   }
   extent_end = extent->start_ + extent->length_;
-  extent->ReadUnlock();
 
   /* Limit read size to end of file */
   if ((offset + n) > fileSize)
@@ -375,15 +379,12 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
 
     if (read != r_sz && r_off == extent_end) {
       extent = GetExtent(offset + read, &r_off);
-      extent->ReadLock();
       if (!extent) {
         /* read beyond end of (synced) file data */
-        extent->ReadUnlock();
         break;
       }
       r_off = extent->start_;
       extent_end = extent->start_ + extent->length_;
-      extent->ReadUnlock();
     }
   }
 
@@ -620,6 +621,21 @@ IOStatus ZoneFile::Recover() {
   }
 
   return IOStatus::OK();
+}
+
+void ZoneFile::ReplaceExtentList(std::vector<ZoneExtent*> new_list) {
+  assert(!IsOpenForWR());
+
+  {
+    WriteLock lck(this);
+    extents_ = new_list;
+    ZoneExtent* last = new_list.back();
+    if (last != nullptr) extent_start_ = last->start_;
+  }
+
+  for (auto* ext : new_list) {
+    ext->zone_->used_capacity_ = ext->length_;
+  }
 }
 
 IOStatus ZoneFile::SetWriteLifeTimeHint(Env::WriteLifeTimeHint lifetime) {
