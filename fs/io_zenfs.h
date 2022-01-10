@@ -15,6 +15,7 @@
 #include <unistd.h>
 
 #include <atomic>
+#include <iostream>
 #include <mutex>
 #include <sstream>
 #include <string>
@@ -30,7 +31,7 @@ namespace ROCKSDB_NAMESPACE {
 class ZoneExtent {
  private:
   std::mutex writer_mtx_;
-  std::atomic<int> readers_;
+  std::atomic<int> readers_{0};
 
  public:
   uint64_t start_;
@@ -50,7 +51,8 @@ class ZoneExtent {
   void ReadUnlock() { readers_--; }
   void WriteLock() {
     writer_mtx_.lock();
-    while(readers_ > 0) {}
+    while (readers_ > 0) {
+    }
   }
   void WriteUnlock() { writer_mtx_.unlock(); }
 };
@@ -136,7 +138,7 @@ class ZoneFile {
   IOStatus MigrateData(uint64_t offset, uint32_t length, Zone* target_zone);
 
   Status DecodeFrom(Slice* input);
-  Status MergeUpdate(std::shared_ptr<ZoneFile> update);
+  Status MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace);
 
   uint64_t GetID() { return file_id_; }
   size_t GetUniqueId(char* id, size_t max_size);

@@ -191,7 +191,7 @@ Status ZoneFile::DecodeFrom(Slice* input) {
   return Status::OK();
 }
 
-Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update) {
+Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update, bool replace) {
   if (file_id_ != update->GetID())
     return Status::Corruption("ZoneFile update", "ID missmatch");
 
@@ -199,6 +199,10 @@ Status ZoneFile::MergeUpdate(std::shared_ptr<ZoneFile> update) {
   SetFileSize(update->GetFileSize());
   SetWriteLifeTimeHint(update->GetWriteLifeTimeHint());
   SetFileModificationTime(update->GetFileModificationTime());
+
+  if (replace) {
+    extents_.clear();
+  }
 
   std::vector<ZoneExtent*> update_extents = update->GetExtents();
   for (long unsigned int i = 0; i < update_extents.size(); i++) {
@@ -327,6 +331,7 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
   if (!extent) {
     /* read start beyond end of (synced) file data*/
     *result = Slice(scratch, 0);
+    extent->ReadUnlock();
     return s;
   }
   extent_end = extent->start_ + extent->length_;
@@ -373,6 +378,7 @@ IOStatus ZoneFile::PositionedRead(uint64_t offset, size_t n, Slice* result,
       extent->ReadLock();
       if (!extent) {
         /* read beyond end of (synced) file data */
+        extent->ReadUnlock();
         break;
       }
       r_off = extent->start_;

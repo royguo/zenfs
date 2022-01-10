@@ -149,6 +149,7 @@ class ZenFS : public FileSystemWrapper {
     kFileUpdate = 2,
     kFileDeletion = 3,
     kEndRecord = 4,
+    kFileReplace = 5,
   };
 
   void LogFiles();
@@ -158,9 +159,12 @@ class ZenFS : public FileSystemWrapper {
   IOStatus RollMetaZoneLocked();
   IOStatus PersistSnapshot(ZenMetaLog* meta_writer);
   IOStatus PersistRecord(std::string record);
-  IOStatus SyncFileMetadata(ZoneFile* zoneFile);
-  IOStatus SyncFileMetadata(std::shared_ptr<ZoneFile> zoneFile) {
-    return SyncFileMetadata(zoneFile.get());
+  // File metadata use kFileUpdate by defailt, if `replace` is set to
+  // true, then kFileReplace will be used.
+  IOStatus SyncFileMetadata(ZoneFile* zoneFile, bool replace = false);
+  IOStatus SyncFileMetadata(std::shared_ptr<ZoneFile> zoneFile,
+                            bool replace = false) {
+    return SyncFileMetadata(zoneFile.get(), replace);
   }
 
   void EncodeSnapshotTo(std::string* output);
@@ -168,7 +172,7 @@ class ZenFS : public FileSystemWrapper {
                             std::string* output);
 
   Status DecodeSnapshotFrom(Slice* input);
-  Status DecodeFileUpdateFrom(Slice* slice);
+  Status DecodeFileUpdateFrom(Slice* slice, bool replace = false);
   Status DecodeFileDeletionFrom(Slice* slice);
 
   Status RecoverFrom(ZenMetaLog* log);
@@ -187,6 +191,12 @@ class ZenFS : public FileSystemWrapper {
   std::shared_ptr<ZoneFile> GetFile(std::string fname);
   IOStatus DeleteFile(std::string fname);
   IOStatus Repair();
+
+ protected:
+  IOStatus OpenWritableFile(const std::string& fname,
+                            const FileOptions& file_opts,
+                            std::unique_ptr<FSWritableFile>* result,
+                            IODebugContext* dbg, bool reopen);
 
  public:
   explicit ZenFS(ZonedBlockDevice* zbd, std::shared_ptr<FileSystem> aux_fs,
@@ -387,6 +397,6 @@ class ZenFS : public FileSystemWrapper {
 Status NewZenFS(
     FileSystem** fs, const std::string& bdevname,
     std::shared_ptr<ZenFSMetrics> metrics = std::make_shared<NoZenFSMetrics>());
-std::map<std::string, std::string> ListZenFileSystems();
+Status ListZenFileSystems(std::map<std::string, std::string>& out_list);
 
 }  // namespace ROCKSDB_NAMESPACE

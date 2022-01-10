@@ -407,7 +407,7 @@ IOStatus ZenFS::PersistRecord(std::string record) {
   return s;
 }
 
-IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
+IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile, bool replace) {
   std::string fileRecord;
   std::string output;
   IOStatus s;
@@ -415,7 +415,11 @@ IOStatus ZenFS::SyncFileMetadata(ZoneFile* zoneFile) {
       zbd_->GetMetrics(), ZENFS_LABEL(META_SYNC, LATENCY), Env::Default());
   std::lock_guard<std::mutex> lock(files_mtx_);
   zoneFile->SetFileModificationTime(time(0));
-  PutFixed32(&output, kFileUpdate);
+  if (replace) {
+    PutFixed32(&output, kFileReplace);
+  } else {
+    PutFixed32(&output, kFileUpdate);
+  }
   zoneFile->EncodeUpdateTo(&fileRecord);
   PutLengthPrefixedSlice(&output, Slice(fileRecord));
 
@@ -517,44 +521,10 @@ IOStatus ZenFS::NewWritableFile(const std::string& fname,
                                 const FileOptions& file_opts,
                                 std::unique_ptr<FSWritableFile>* result,
                                 IODebugContext* /*dbg*/) {
-  IOStatus s;
-
   Debug(logger_, "New writable file: %s direct: %d\n", fname.c_str(),
         file_opts.use_direct_writes);
 
-  if (GetFile(fname) != nullptr) {
-    s = DeleteFile(fname);
-    if (!s.ok()) return s;
-  }
-
-  std::shared_ptr<ZoneFile> zoneFile(
-      new ZoneFile(zbd_, fname, next_file_id_++));
-  zoneFile->SetFileModificationTime(time(0));
-
-  /* RocksDB does not set the right io type(!)*/
-  if (ends_with(fname, ".log")) {
-    zoneFile->SetIOType(IOType::kWAL);
-  } else {
-    zoneFile->SetIOType(IOType::kUnknown);
-  }
-
-  zoneFile->SetSparse(!file_opts.use_direct_writes);
-
-  /* Persist the creation of the file */
-  s = SyncFileMetadata(zoneFile);
-  if (!s.ok()) {
-    zoneFile.reset();
-    return s;
-  }
-
-  files_mtx_.lock();
-  files_.insert(std::make_pair(fname.c_str(), zoneFile));
-  files_mtx_.unlock();
-
-  result->reset(new ZonedWritableFile(zbd_, !file_opts.use_direct_writes,
-                                      zoneFile, &metadata_writer_));
-
-  return s;
+  return OpenWritableFile(fname, file_opts, result, nullptr, false);
 }
 
 IOStatus ZenFS::ReuseWritableFile(const std::string& fname,
@@ -562,13 +532,24 @@ IOStatus ZenFS::ReuseWritableFile(const std::string& fname,
                                   const FileOptions& file_opts,
                                   std::unique_ptr<FSWritableFile>* result,
                                   IODebugContext* dbg) {
+  IOStatus s;
   Debug(logger_, "Reuse writable file: %s old name: %s\n", fname.c_str(),
         old_fname.c_str());
 
-  if (GetFile(fname) == nullptr)
+  if (GetFile(old_fname) == nullptr)
     return IOStatus::NotFound("Old file does not exist");
 
-  return NewWritableFile(fname, file_opts, result, dbg);
+  /*
+   * Delete the old file as it cannot be written from start of file
+   * and create a new file with fname
+   */
+  s = DeleteFile(old_fname);
+  if (!s.ok()) {
+    Error(logger_, "Failed to delete file %s\n", old_fname.c_str());
+    return s;
+  }
+
+  return OpenWritableFile(fname, file_opts, result, dbg, false);
 }
 
 IOStatus ZenFS::FileExists(const std::string& fname, const IOOptions& options,
@@ -582,16 +563,16 @@ IOStatus ZenFS::FileExists(const std::string& fname, const IOOptions& options,
   }
 }
 
+/* If the file does not exist, create a new one,
+ * else return the existing file
+ */
 IOStatus ZenFS::ReopenWritableFile(const std::string& fname,
-                                   const FileOptions& options,
+                                   const FileOptions& file_opts,
                                    std::unique_ptr<FSWritableFile>* result,
                                    IODebugContext* dbg) {
   Debug(logger_, "Reopen writable file: %s \n", fname.c_str());
 
-  if (GetFile(fname) != nullptr)
-    return NewWritableFile(fname, options, result, dbg);
-
-  return target()->NewWritableFile(fname, options, result, dbg);
+  return OpenWritableFile(fname, file_opts, result, dbg, true);
 }
 
 IOStatus ZenFS::GetChildren(const std::string& dir, const IOOptions& options,
@@ -633,6 +614,53 @@ IOStatus ZenFS::GetChildren(const std::string& dir, const IOOptions& options,
       }
     }
   }
+
+  return s;
+}
+
+IOStatus ZenFS::OpenWritableFile(const std::string& fname,
+                                 const FileOptions& file_opts,
+                                 std::unique_ptr<FSWritableFile>* result,
+                                 IODebugContext* /*dbg*/, bool reopen) {
+  IOStatus s;
+  std::shared_ptr<ZoneFile> zoneFile = GetFile(fname);
+
+  /* if reopen is true and the file exists, return it */
+  if (reopen && zoneFile != nullptr) {
+    result->reset(new ZonedWritableFile(zbd_, !file_opts.use_direct_writes,
+                                        zoneFile, &metadata_writer_));
+    return IOStatus::OK();
+  }
+
+  if (zoneFile != nullptr) {
+    s = DeleteFile(fname);
+    if (!s.ok()) return s;
+  }
+
+  zoneFile = std::make_shared<ZoneFile>(zbd_, fname, next_file_id_++);
+  zoneFile->SetFileModificationTime(time(0));
+
+  /* RocksDB does not set the right io type(!)*/
+  if (ends_with(fname, ".log")) {
+    zoneFile->SetIOType(IOType::kWAL);
+  } else {
+    zoneFile->SetIOType(IOType::kUnknown);
+  }
+
+  zoneFile->SetSparse(!file_opts.use_direct_writes);
+
+  /* Persist the creation of the file */
+  s = SyncFileMetadata(zoneFile);
+  if (!s.ok()) {
+    zoneFile.reset();
+    return s;
+  }
+
+  std::lock_guard<std::mutex> file_lock(files_mtx_);
+  files_.insert(std::make_pair(fname.c_str(), zoneFile));
+
+  result->reset(new ZonedWritableFile(zbd_, !file_opts.use_direct_writes,
+                                      zoneFile, &metadata_writer_));
 
   return s;
 }
@@ -763,7 +791,7 @@ void ZenFS::EncodeJson(std::ostream& json_stream) {
   json_stream << "]";
 }
 
-Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
+Status ZenFS::DecodeFileUpdateFrom(Slice* slice, bool replace) {
   std::shared_ptr<ZoneFile> update(new ZoneFile(zbd_, "not_set", 0));
   uint64_t id;
   Status s;
@@ -774,13 +802,13 @@ Status ZenFS::DecodeFileUpdateFrom(Slice* slice) {
   id = update->GetID();
   if (id >= next_file_id_) next_file_id_ = id + 1;
 
-  /* Check if this is an update to an existing file */
+  /* Check if this is an update or an replace to an existing file */
   for (auto it = files_.begin(); it != files_.end(); it++) {
     std::shared_ptr<ZoneFile> zFile = it->second;
     if (id == zFile->GetID()) {
       std::string oldName = zFile->GetFilename();
 
-      s = zFile->MergeUpdate(update);
+      s = zFile->MergeUpdate(update, replace);
       update.reset();
 
       if (!s.ok()) return s;
@@ -894,6 +922,15 @@ Status ZenFS::RecoverFrom(ZenMetaLog* log) {
 
       case kFileUpdate:
         s = DecodeFileUpdateFrom(&data);
+        if (!s.ok()) {
+          Warn(logger_, "Could not decode file snapshot: %s",
+               s.ToString().c_str());
+          return s;
+        }
+        break;
+
+      case kFileReplace:
+        s = DecodeFileUpdateFrom(&data, true);
         if (!s.ok()) {
           Warn(logger_, "Could not decode file snapshot: %s",
                s.ToString().c_str());
@@ -1199,8 +1236,9 @@ Status NewZenFS(FileSystem** fs, const std::string& bdevname,
   return Status::OK();
 }
 
-std::map<std::string, std::string> ListZenFileSystems() {
+Status ListZenFileSystems(std::map<std::string, std::string>& out_list) {
   std::map<std::string, std::string> zenFileSystems;
+
   auto closedirDeleter = [](DIR* d) {
     if (d != nullptr) closedir(d);
   };
@@ -1224,6 +1262,10 @@ std::map<std::string, std::string> ListZenFileSystems() {
         for (const auto z : metazones) {
           Superblock super_block;
           std::unique_ptr<ZenMetaLog> log;
+          if (!z->Acquire()) {
+            return Status::Aborted("Could not aquire busy flag of zone" +
+                                   std::to_string(z->GetZoneNr()));
+          }
           log.reset(new ZenMetaLog(zbd.get(), z));
 
           if (!log->ReadRecord(&super_record, &scratch).ok()) continue;
@@ -1246,7 +1288,8 @@ std::map<std::string, std::string> ListZenFileSystems() {
     }
   }
 
-  return zenFileSystems;
+  out_list = std::move(zenFileSystems);
+  return Status::OK();
 }
 
 void ZenFS::GetZenFSSnapshot(ZenFSSnapshot& snapshot,
@@ -1330,8 +1373,10 @@ IOStatus ZenFS::MigrateFileExtents(
 
     // Allocate a new migration zone.
     s = zbd_->TakeMigrateZone(&target_zone, zfile->GetWriteLifeTimeHint(),
-                          ext->length_);
-    if(!s.ok()) { continue; }
+                              ext->length_);
+    if (!s.ok()) {
+      continue;
+    }
 
     if (target_zone == nullptr) {
       zbd_->ReleaseMigrateZone(target_zone);
@@ -1370,7 +1415,7 @@ IOStatus ZenFS::MigrateFileExtents(
     zbd_->ReleaseMigrateZone(target_zone);
   }
 
-  // Add a file deletion record
+  /*
   std::string record;
   EncodeFileDeletionTo(zfile, &record);
   s = PersistRecord(record);
@@ -1378,13 +1423,15 @@ IOStatus ZenFS::MigrateFileExtents(
     Info(logger_, "Migration: Delete old file failed!");
     return s;
   }
+  */
 
-  // Re-insert a file creation record
+  // Add a file replace record
   zfile->MetadataUnsynced();
   SyncFileMetadata(zfile);
 
   Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());
+
   return IOStatus::OK();
 }
 
@@ -1406,16 +1453,20 @@ FactoryFunc<FileSystem> zenfs_filesystem_reg =
               *errmsg = s.ToString();
             }
           } else if (devID.rfind("uuid:") == 0) {
-            std::map<std::string, std::string> zenFileSystems =
-                ListZenFileSystems();
-            devID.replace(0, strlen("uuid:"), "");
-
-            if (zenFileSystems.find(devID) == zenFileSystems.end()) {
-              *errmsg = "UUID not found";
+            std::map<std::string, std::string> zenFileSystems;
+            s = ListZenFileSystems(zenFileSystems);
+            if (!s.ok()) {
+              *errmsg = s.ToString();
             } else {
-              s = NewZenFS(&fs, zenFileSystems[devID]);
-              if (!s.ok()) {
-                *errmsg = s.ToString();
+              devID.replace(0, strlen("uuid:"), "");
+
+              if (zenFileSystems.find(devID) == zenFileSystems.end()) {
+                *errmsg = "UUID not found";
+              } else {
+                s = NewZenFS(&fs, zenFileSystems[devID]);
+                if (!s.ok()) {
+                  *errmsg = s.ToString();
+                }
               }
             }
           } else {
