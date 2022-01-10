@@ -723,7 +723,7 @@ IOStatus ZonedBlockDevice::AllocateEmptyZone(Zone **zone_out) {
   return IOStatus::OK();
 }
 
-int ZonedBlockDevice::DirectRead(char *buf, uint64_t offset, uint32_t n) {
+int ZonedBlockDevice::DirectRead(char *buf, uint64_t offset, int n) {
   int ret = 0;
   int r = -1;
   int f = GetReadDirectFD();
@@ -933,48 +933,6 @@ void ZonedBlockDevice::GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot) {
   for (auto *zone : io_zones) {
     snapshot.emplace_back(*zone);
   }
-}
-
-bool ZonedBlockDevice::IsDataIdentical(uint64_t lba1, uint64_t lba2,
-                                       uint32_t length) {
-  int block_sz = GetBlockSize();
-  int step = 128 << 10;
-  int pad_sz = 0;
-  int read_sz = step;
-  int left = length;
-
-  char *buf1;
-  char *buf2;
-
-  posix_memalign((void **)&buf1, block_sz, step);
-  posix_memalign((void **)&buf2, block_sz, step);
-
-  while (left > 0) {
-    read_sz = read_sz > left ? left : read_sz;
-    pad_sz = block_sz - (read_sz % block_sz);
-
-    memset(buf1, 0, step);
-    memset(buf2, 0, step);
-
-    int r1 = DirectRead(buf1, lba1 + (length - left), read_sz + pad_sz);
-    int r2 = DirectRead(buf2, lba2 + (length - left), read_sz + pad_sz);
-
-    if (r1 != r2) {
-      Info(logger_, "IsDataIdentical: returned size not equal!");
-      return false;
-    }
-
-    if (memcmp(buf1, buf2, read_sz) != 0) {
-      Info(logger_, "IsDataIdentical: data not equal!");
-      return false;
-    }
-
-    left -= read_sz;
-  }
-
-  free(buf1);
-  free(buf2);
-  return true;
 }
 
 }  // namespace ROCKSDB_NAMESPACE

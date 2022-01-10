@@ -927,8 +927,6 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
     return IOStatus::IOError("failed allocating alignment write buffer\n");
   }
 
-  uint32_t write_sz = length;
-
   int pad_sz = 0;
   while (length > 0) {
     read_sz = length > read_sz ? read_sz : length;

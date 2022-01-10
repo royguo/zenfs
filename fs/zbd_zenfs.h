@@ -161,16 +161,12 @@ class ZonedBlockDevice {
 
   void GetZoneSnapshot(std::vector<ZoneSnapshot> &snapshot);
 
-  int DirectRead(char *buf, uint64_t offset, uint32_t n);
+  int DirectRead(char *buf, uint64_t offset, int n);
 
   IOStatus ReleaseMigrateZone(Zone *zone);
 
   IOStatus TakeMigrateZone(Zone **out_zone, Env::WriteLifeTimeHint lifetime,
                            uint32_t min_capacity);
-
-  // For debug, Check if the data betwee [lba1, length] and [lba2, lenght] is
-  // identical.
-  bool IsDataIdentical(uint64_t lba1, uint64_t lba2, uint32_t length);
 
  private:
   std::string ErrorToString(int err);
