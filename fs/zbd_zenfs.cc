@@ -675,7 +675,7 @@ IOStatus ZonedBlockDevice::GetBestOpenZoneMatch(
   for (const auto z : io_zones) {
     if (z->Acquire()) {
       if ((z->used_capacity_ > 0) && !z->IsFull() &&
-          z->capacity_ > min_capacity) {
+          z->capacity_ >= min_capacity) {
         unsigned int diff = GetLifeTimeDiff(z->lifetime_, file_lifetime);
         if (diff <= best_diff) {
           if (allocated_zone != nullptr) {
@@ -746,7 +746,7 @@ int ZonedBlockDevice::DirectRead(char *buf, uint64_t offset, int n) {
 IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
   IOStatus s = IOStatus::OK();
   {
-    std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
+    std::unique_lock<std::mutex> lock(migrate_zone_mtx_);
     migrating_ = false;
     if (zone != nullptr) {
       s = zone->CheckRelease();
@@ -760,8 +760,8 @@ IOStatus ZonedBlockDevice::ReleaseMigrateZone(Zone *zone) {
 IOStatus ZonedBlockDevice::TakeMigrateZone(Zone **out_zone,
                                            Env::WriteLifeTimeHint file_lifetime,
                                            uint32_t min_capacity) {
-  std::unique_lock<std::mutex> lock_(migrate_zone_mtx_);
-  migrate_resource_.wait(lock_, [this] { return !migrating_; });
+  std::unique_lock<std::mutex> lock(migrate_zone_mtx_);
+  migrate_resource_.wait(lock, [this] { return !migrating_; });
 
   migrating_ = true;
 

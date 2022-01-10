@@ -1415,19 +1415,9 @@ IOStatus ZenFS::MigrateFileExtents(
     zbd_->ReleaseMigrateZone(target_zone);
   }
 
-  /*
-  std::string record;
-  EncodeFileDeletionTo(zfile, &record);
-  s = PersistRecord(record);
-  if (!s.ok()) {
-    Info(logger_, "Migration: Delete old file failed!");
-    return s;
-  }
-  */
-
   // Add a file replace record
   zfile->MetadataUnsynced();
-  SyncFileMetadata(zfile);
+  SyncFileMetadata(zfile, true);
 
   Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());

@@ -936,6 +936,7 @@ IOStatus ZoneFile::MigrateData(uint64_t offset, uint32_t length,
 
     int r = zbd_->DirectRead(buf, offset, read_sz + pad_sz);
     if (r < 0) {
+      free(buf);
       return IOStatus::IOError(strerror(errno));
     }
     target_zone->Append(buf, r);
