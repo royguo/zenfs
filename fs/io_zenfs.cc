@@ -629,12 +629,14 @@ void ZoneFile::ReplaceExtentList(std::vector<ZoneExtent*> new_list) {
   {
     WriteLock lck(this);
     extents_ = new_list;
-    ZoneExtent* last = new_list.back();
-    if (last != nullptr) extent_start_ = last->start_;
+    if (new_list.size() > 0) {
+      ZoneExtent* last = new_list.back();
+      extent_start_ = last->start_;
+    }
   }
 
   for (auto* ext : new_list) {
-    ext->zone_->used_capacity_ = ext->length_;
+    ext->zone_->used_capacity_ += ext->length_;
   }
 }
 
