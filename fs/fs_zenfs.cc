@@ -1391,7 +1391,6 @@ IOStatus ZenFS::MigrateFileExtents(
     }
 
     uint64_t target_start = target_zone->wp_;
-    std::cout << "is sparse: " << zfile->IsSparse() << std::endl;
     if (zfile->IsSparse()) {
       // For buffered write, ZenFS use inlined metadata for extents and each
       // extent has a SPARSE_HEADER_SIZE.
