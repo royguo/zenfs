@@ -624,19 +624,15 @@ IOStatus ZoneFile::Recover() {
 }
 
 void ZoneFile::ReplaceExtentList(std::vector<ZoneExtent*> new_list) {
-  assert(!IsOpenForWR());
+  assert(!IsOpenForWR() && new_list.size() > 0);
 
-  {
-    WriteLock lck(this);
-    extents_ = new_list;
-    if (new_list.size() > 0) {
-      ZoneExtent* last = new_list.back();
-      extent_start_ = last->start_;
-    }
-  }
+  WriteLock lck(this);
 
-  for (auto* ext : new_list) {
-    ext->zone_->used_capacity_ += ext->length_;
+  ClearExtents();
+  extents_ = new_list;
+  if (new_list.size() > 0) {
+    ZoneExtent* last = new_list.back();
+    extent_start_ = last->start_;
   }
 }
 

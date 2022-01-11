@@ -1356,7 +1356,13 @@ IOStatus ZenFS::MigrateFileExtents(
 
   std::vector<ZoneExtent*> new_extent_list;
   std::vector<ZoneExtent*> extents = zfile->GetExtents();
-  for (ZoneExtent* ext : extents) {
+  for (const auto* ext : extents) {
+    new_extent_list.push_back(
+        new ZoneExtent(ext->start_, ext->length_, ext->zone_));
+  }
+
+  // Modify the new extent list
+  for (ZoneExtent* ext : new_extent_list) {
     // Check if current extent need to be migrated
     auto it = std::find_if(migrate_exts.begin(), migrate_exts.end(),
                            [&](const ZoneExtentSnapshot* ext_snapshot) {
@@ -1369,7 +1375,6 @@ IOStatus ZenFS::MigrateFileExtents(
       continue;
     }
 
-    Zone* old_zone = ext->zone_;
     Zone* target_zone = nullptr;
 
     // Allocate a new migration zone.
@@ -1386,6 +1391,7 @@ IOStatus ZenFS::MigrateFileExtents(
     }
 
     uint64_t target_start = target_zone->wp_;
+    std::cout << "is sparse: " << zfile->IsSparse() << std::endl;
     if (zfile->IsSparse()) {
       // For buffered write, ZenFS use inlined metadata for extents and each
       // extent has a SPARSE_HEADER_SIZE.
@@ -1397,16 +1403,16 @@ IOStatus ZenFS::MigrateFileExtents(
       zfile->MigrateData(ext->start_, ext->length_, target_zone);
     }
 
-    // Check again if the file still exist
+    // If the file doesn't exist, skip
     if (GetFileInternal(fname) == nullptr) {
       Info(logger_, "Migrate file not exist anymore.");
       zbd_->ReleaseMigrateZone(target_zone);
       break;
     }
 
-    // Fill new extent list
-    new_extent_list.push_back(
-        new ZoneExtent(target_start, ext->length_, target_zone));
+    ext->start_ = target_start;
+    ext->zone_ = target_zone;
+    ext->zone_->used_capacity_ += ext->length_;
 
     zbd_->ReleaseMigrateZone(target_zone);
   }
@@ -1417,18 +1423,12 @@ IOStatus ZenFS::MigrateFileExtents(
     return IOStatus::OK();
   }
 
-  // Replace extent list, locked
+  // Replace extent list, Locked
   zfile->ReplaceExtentList(new_extent_list);
 
   // Add a file replace record
   zfile->MetadataUnsynced();
   SyncFileMetadata(zfile, true);
-
-  // Deallocate old zone list
-  for (auto* ext : extents) {
-    ext->zone_->used_capacity_ -= ext->length_;
-    delete ext;
-  }
 
   Info(logger_, "MigrateFileExtents Finished, fname: %s, extent count: %lu",
        fname.data(), migrate_exts.size());

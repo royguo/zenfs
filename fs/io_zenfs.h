@@ -170,9 +170,7 @@ class ZoneFile {
       while (zfile_->readers_ > 0) {
       }
     }
-    ~WriteLock() {
-      zfile_->writer_mtx_.unlock();
-    }
+    ~WriteLock() { zfile_->writer_mtx_.unlock(); }
 
    private:
     ZoneFile* zfile_;
