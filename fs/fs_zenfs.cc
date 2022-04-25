@@ -428,7 +428,9 @@ IOStatus ZenFS::SyncFileExtents(ZoneFile* zoneFile,
   for (size_t i = 0; i < new_extents.size(); ++i) {
     ZoneExtent* old_ext = old_extents[i];
     if (old_ext->start_ != new_extents[i]->start_) {
+      old_ext->zone_->Acquire();
       old_ext->zone_->used_capacity_ -= old_ext->length_;
+      old_ext->zone_->Release();
     }
     delete old_ext;
   }
@@ -1441,6 +1443,7 @@ IOStatus ZenFS::MigrateFileExtents(
     }
 
     // If the file doesn't exist, skip
+    std::lock_guard<std::mutex> lk_(files_mtx_);
     if (GetFileInternal(fname) == nullptr) {
       Info(logger_, "Migrate file not exist anymore.");
       zbd_->ReleaseMigrateZone(target_zone);
